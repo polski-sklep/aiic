@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: committee
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-committee_dev_pw}
+              POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: committee
     ports:
       - "5432:5432"
@@ -41,7 +41,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://committee:${POSTGRES_PASSWORD:-committee_dev_pw}@postgres:5432/committee
+            DATABASE_URL: postgresql+asyncpg://committee:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/committee
       REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:

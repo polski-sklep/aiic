@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Auth
     google_client_id: str = ""
     google_client_secret: str = ""
-    jwt_secret: str = "change-this-in-production"
+        jwt_secret: str = ""  # Required: set a strong random secret in .env (e.g. openssl rand -hex 32)
 
     # Notion
     notion_api_key: str = ""

@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Committee Report</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+body{background:#0a0a0a;color:#e5e5e5;font-family:system-ui;
+max-width:900px;margin:0 auto;padding:40px 24px;line-height:1.7}
+h1,h2,h3{color:#fff}
+h1{border-bottom:2px solid #22c55e;padding-bottom:12px}
+h2{margin-top:32px;border-bottom:1px solid #2a2a2a;padding-bottom:8px}
+table{width:100%;border-collapse:collapse;margin:16px 0}
+th,td{padding:8px 12px;border:1px solid #2a2a2a;text-align:left}
+th{background:#1e1e1e}
+hr{border:none;border-top:1px solid #2a2a2a;margin:32px 0}
+strong{color:#fff}
+</style>
+</head>
+<body>
+<div id="c"></div>
+<script>
+const markdown = MARKER;
+document.getElementById("c").innerHTML = marked.parse(markdown);
+</script>
+</body>
+</html>

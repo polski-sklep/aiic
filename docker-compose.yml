@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: committee-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: committee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-committee_dev_pw}
+      POSTGRES_DB: committee
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U committee"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  redis:
+    image: redis:7-alpine
+    container_name: committee-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: committee-backend
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://committee:${POSTGRES_PASSWORD:-committee_dev_pw}@postgres:5432/committee
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+volumes:
+  pgdata:
+  redisdata:

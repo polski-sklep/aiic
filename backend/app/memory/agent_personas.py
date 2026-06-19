@@ -6,6 +6,7 @@ CONSTRAINTS.md, MEMORY.md. Files are concatenated in a fixed order
 to build the agent's full persona context.
 """
 from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -16,6 +17,7 @@ COMMITTEE_DIR = Path(__file__).parent / "committee"
 # Map Python agent names to Cowork folder names
 AGENT_FOLDERS = {
     "tokenomics_analyst": "economics",
+    "technical_analyst": "technical-analyst",
     "governance_analyst": "gov-analyst",
     "onchain_analyst": "onchain-analyst",
     "competitive_intel": "competitive-intel",

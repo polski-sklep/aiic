@@ -3,8 +3,8 @@ import json
 
 from app.agents.base import BaseAgent
 from app.llm import ModelTier
-from app.utils.types import JSONObject
 from app.utils.citations import format_source_catalog_text
+from app.utils.types import JSONObject
 
 
 class ReportWriter(BaseAgent):
@@ -19,6 +19,7 @@ class ReportWriter(BaseAgent):
 
     def get_system_prompt(self, context: JSONObject) -> str:
         from app.memory import get_agent_context
+
         project = context.get("project_name", "Unknown")
         institutional = get_agent_context(self.name)
         prior = context.get("prior_agent_outputs", {})
@@ -43,7 +44,11 @@ SOURCE CATALOG:
 {source_text}
 
 COMPILE A 24-SECTION STRUCTURED REPORT from the agent outputs above.
-Do NOT invent new data — only synthesise what the agents found.
+Do NOT invent new data and do NOT cite sources that are not in the SOURCE CATALOG.
+
+SPECIAL HANDLING:
+- If technical_analyst output is present, use it for entry timing, execution caveats, and signposts.
+- Do not treat the technical_analyst score as investment conviction.
 
 CITATION RULES:
 - Every sentence containing a factual claim, interpretation, or recommendation must end with one or more inline source markers like [1] or [1][2].

@@ -1,8 +1,11 @@
 from __future__ import annotations
+
+import asyncio
 from typing import TYPE_CHECKING, TypedDict, cast
 
 import httpx
 
+from app.config import get_settings
 from app.llm import JSONValue, SourceReference, ToolDefinition
 from app.tools.registry import ToolArguments
 
@@ -10,6 +13,7 @@ if TYPE_CHECKING:
     from app.tools.registry import ToolRegistry
 
 BASE_URL = "https://api.coingecko.com/api/v3"
+RETRY_DELAYS_SECONDS = (2, 4, 8, 16)
 
 
 class ToolError(TypedDict, total=False):
@@ -58,8 +62,35 @@ def _source(coin_id: str) -> SourceReference:
             "label": f"CoinGecko: {coin_id}",
             "url": f"https://www.coingecko.com/en/coins/{coin_id}",
             "kind": "market_data",
+            "supports": "CoinGecko market data, supply, valuation, liquidity, and historical token metrics.",
         },
     )
+
+
+def _headers() -> dict[str, str]:
+    settings = get_settings()
+    if not settings.coingecko_api_key:
+        return {}
+    return {"x-cg-demo-api-key": settings.coingecko_api_key}
+
+
+async def _get_with_backoff(
+    client: httpx.AsyncClient,
+    path: str,
+    *,
+    params: dict[str, str],
+) -> httpx.Response | None:
+    url = f"{BASE_URL}/{path.lstrip('/')}"
+
+    for attempt, delay in enumerate((0, *RETRY_DELAYS_SECONDS), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+
+        response = await client.get(url, params=params, headers=_headers())
+        if response.status_code != 429:
+            return response
+
+    return None
 
 
 async def get_price(args: ToolArguments) -> CoinGeckoPriceResult | ToolError:
@@ -68,8 +99,9 @@ async def get_price(args: ToolArguments) -> CoinGeckoPriceResult | ToolError:
     currency = str(args.get("currency", "usd")).lower()
 
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{BASE_URL}/simple/price",
+        response = await _get_with_backoff(
+            client,
+            "simple/price",
             params={
                 "ids": coin_id,
                 "vs_currencies": currency,
@@ -78,9 +110,16 @@ async def get_price(args: ToolArguments) -> CoinGeckoPriceResult | ToolError:
                 "include_24hr_change": "true",
             },
         )
-        resp.raise_for_status()
-        data = cast(dict[str, JSONValue], resp.json())
 
+    if response is None:
+        return {"error": "CoinGecko rate limit persisted after retries. Try again shortly."}
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return {"error": f"CoinGecko request failed with status {exc.response.status_code}."}
+
+    data = cast(dict[str, JSONValue], response.json())
     if coin_id not in data:
         return {"error": f"Coin '{coin_id}' not found. Use CoinGecko coin ID (e.g., 'bitcoin', 'ethereum', 'uniswap')."}
 
@@ -101,8 +140,9 @@ async def get_token_info(args: ToolArguments) -> CoinGeckoTokenInfoResult | Tool
     coin_id = str(args.get("coin_id", "")).lower().strip()
 
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{BASE_URL}/coins/{coin_id}",
+        response = await _get_with_backoff(
+            client,
+            f"coins/{coin_id}",
             params={
                 "localization": "false",
                 "tickers": "false",
@@ -110,9 +150,18 @@ async def get_token_info(args: ToolArguments) -> CoinGeckoTokenInfoResult | Tool
                 "developer_data": "true",
             },
         )
-        resp.raise_for_status()
-        data = cast(dict[str, JSONValue], resp.json())
 
+    if response is None:
+        return {"error": "CoinGecko rate limit persisted after retries. Try again shortly."}
+    if response.status_code == 404:
+        return {"error": f"Coin '{coin_id}' not found on CoinGecko."}
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return {"error": f"CoinGecko request failed with status {exc.response.status_code}."}
+
+    data = cast(dict[str, JSONValue], response.json())
     market = cast(dict[str, JSONValue], data.get("market_data", {}))
     description = cast(dict[str, JSONValue], data.get("description", {}))
     return {

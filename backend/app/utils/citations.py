@@ -104,6 +104,23 @@ def extract_sources_from_tool_result(
     extracted: list[SourceRecord] = []
     retrieved_at = _now_iso()
 
+    explicit_sources = result.get("sources", [])
+    if isinstance(explicit_sources, list):
+        for item in explicit_sources:
+            if not isinstance(item, dict):
+                continue
+            source = make_source(
+                label=item.get("label") or item.get("url") or tool_name,
+                url=item.get("url", ""),
+                kind=item.get("kind", "source"),
+                tool_name=tool_name,
+                agent_name=agent_name,
+                supports=item.get("supports", ""),
+                retrieved_at=retrieved_at,
+            )
+            if source:
+                extracted.append(source)
+
     if tool_name == "web_search":
         for item in result.get("results", []):
             source = make_source(

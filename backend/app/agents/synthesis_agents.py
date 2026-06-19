@@ -128,7 +128,7 @@ OUTPUT JSON:
         {{"claim": "what was claimed", "counter": "why it might be wrong"}},
     ],
     "load_bearing_assumptions": [
-        {{{{"assumption": "what the bull case depends on", "fragility": "how easily this breaks", "evidence_against": "what contradicts it"}}}}
+        {{"assumption": "what the bull case depends on", "fragility": "how easily this breaks", "evidence_against": "what contradicts it"}}
     ],
     "strongest_counter_thesis": "Single paragraph: the most compelling reason this investment fails",
     "weakness_classification": {{
@@ -177,6 +177,19 @@ class PortfolioManager(BaseAgent):
             "PRIOR AGENT SCORES",
             (("score", "Score", None),),
         )
+        technical_text = ""
+        technical_output = prior.get("technical_analyst") if isinstance(prior, dict) else None
+        if isinstance(technical_output, dict):
+            technical_text = format_prior_outputs_section(
+                {"technical_analyst": technical_output},
+                "TECHNICAL ENTRY CONTEXT (timing only, not conviction)",
+                (
+                    ("current_price_entry_quality", "Current entry quality", None),
+                    ("recommended_strategy", "Preferred strategy", None),
+                    ("entry_zones", "Entry zones", 3),
+                    ("risks", "TA risks", 3),
+                ),
+            )
 
         portfolio_text = ""
         if portfolio:
@@ -187,7 +200,7 @@ class PortfolioManager(BaseAgent):
                     f"{p.get('allocation_pct', '?')}% - {p.get('category', '?')}\n"
                 )
 
-        prompt_context = combine_prompt_sections(institutional, prior_text, portfolio_text)
+        prompt_context = combine_prompt_sections(institutional, prior_text, technical_text, portfolio_text)
 
         return f"""You are the Portfolio Manager on a personal crypto investment committee.
 

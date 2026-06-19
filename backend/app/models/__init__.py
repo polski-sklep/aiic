@@ -1,10 +1,10 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import (
-    Column, String, Text, Integer, Numeric, Boolean, DateTime, ForeignKey
-)
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+
 from app.database import Base
 
 
@@ -123,4 +123,40 @@ class KnowledgeChunk(Base):
     content = Column(Text, nullable=False)
     embedding = Column(Vector(1536))
     metadata_ = Column("metadata", JSONB, default=dict)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class CalibrationRecord(Base):
+    __tablename__ = "calibration_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(UUID(as_uuid=True), ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True)
+    project_name = Column(String, nullable=False)
+    ticker = Column(String)
+    coingecko_id = Column(String)
+    category = Column(String)
+    recommendation = Column(String, nullable=False)
+    overall_score = Column(Numeric(5, 2))
+    chair_confidence = Column(String)
+    vetoed = Column(Boolean, default=False)
+    entry_price_usd = Column(Numeric)
+    entry_market_cap_usd = Column(Numeric)
+    entry_captured_at = Column(DateTime(timezone=True))
+    btc_price_at_entry = Column(Numeric)
+    eth_price_at_entry = Column(Numeric)
+    price_30d = Column(Numeric)
+    price_90d = Column(Numeric)
+    price_180d = Column(Numeric)
+    checked_30d_at = Column(DateTime(timezone=True))
+    checked_90d_at = Column(DateTime(timezone=True))
+    checked_180d_at = Column(DateTime(timezone=True))
+    btc_price_30d = Column(Numeric)
+    btc_price_90d = Column(Numeric)
+    btc_price_180d = Column(Numeric)
+    return_30d_pct = Column(Numeric(10, 2))
+    return_90d_pct = Column(Numeric(10, 2))
+    return_180d_pct = Column(Numeric(10, 2))
+    alpha_vs_btc_30d_pct = Column(Numeric(10, 2))
+    alpha_vs_btc_90d_pct = Column(Numeric(10, 2))
+    alpha_vs_btc_180d_pct = Column(Numeric(10, 2))
     created_at = Column(DateTime(timezone=True), default=utcnow)

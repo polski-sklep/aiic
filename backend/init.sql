@@ -124,3 +124,42 @@ CREATE TABLE knowledge_chunks (
 CREATE INDEX idx_knowledge_embedding ON knowledge_chunks
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX idx_knowledge_source ON knowledge_chunks(source_type, source_id);
+
+-- Calibration records
+CREATE TABLE calibration_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    evaluation_id UUID REFERENCES evaluations(id) ON DELETE SET NULL,
+    project_name TEXT NOT NULL,
+    ticker TEXT,
+    coingecko_id TEXT,
+    category TEXT,
+    recommendation TEXT NOT NULL,
+    overall_score NUMERIC(5,2),
+    chair_confidence TEXT,
+    vetoed BOOLEAN DEFAULT FALSE,
+    entry_price_usd NUMERIC,
+    entry_market_cap_usd NUMERIC,
+    entry_captured_at TIMESTAMPTZ,
+    btc_price_at_entry NUMERIC,
+    eth_price_at_entry NUMERIC,
+    price_30d NUMERIC,
+    price_90d NUMERIC,
+    price_180d NUMERIC,
+    checked_30d_at TIMESTAMPTZ,
+    checked_90d_at TIMESTAMPTZ,
+    checked_180d_at TIMESTAMPTZ,
+    btc_price_30d NUMERIC,
+    btc_price_90d NUMERIC,
+    btc_price_180d NUMERIC,
+    return_30d_pct NUMERIC(10,2),
+    return_90d_pct NUMERIC(10,2),
+    return_180d_pct NUMERIC(10,2),
+    alpha_vs_btc_30d_pct NUMERIC(10,2),
+    alpha_vs_btc_90d_pct NUMERIC(10,2),
+    alpha_vs_btc_180d_pct NUMERIC(10,2),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_calibration_recommendation ON calibration_records(recommendation);
+CREATE INDEX idx_calibration_entry_captured_at ON calibration_records(entry_captured_at);
+CREATE INDEX idx_calibration_evaluation_id ON calibration_records(evaluation_id);

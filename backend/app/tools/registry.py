@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -61,12 +62,14 @@ def get_tool_registry() -> ToolRegistry:
 
 def _register_all_tools(registry: ToolRegistry) -> None:
     """Import and register all tool modules."""
+    from app.tools.binance import register as register_binance
     from app.tools.coingecko import register as register_coingecko
     from app.tools.defillama import register as register_defillama
     from app.tools.twitter import register as register_twitter
     from app.tools.web_search import register as register_web_search
     from app.tools.notion_tools import register as register_notion
 
+    register_binance(registry)
     register_coingecko(registry)
     register_defillama(registry)
     register_web_search(registry)

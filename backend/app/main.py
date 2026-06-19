@@ -1,15 +1,17 @@
 import logging
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import get_settings
+from app.api.calibration import router as calibration_router
 from app.api.evaluate import router as evaluate_router
-from app.api.tools import router as tools_router
-from app.api.projects import router as projects_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
+from app.api.projects import router as projects_router
 from app.api.reports import router as reports_router
+from app.api.tools import router as tools_router
+from app.config import get_settings
 
 settings = get_settings()
 
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
 
     # Pre-initialize tool registry
     from app.tools import get_tool_registry
+
     registry = get_tool_registry()
     logger.info(f"Tools loaded: {registry.tool_names}")
 
@@ -55,6 +58,7 @@ app.add_middleware(
 
 # Routes
 app.include_router(evaluate_router)
+app.include_router(calibration_router)
 app.include_router(tools_router)
 app.include_router(projects_router)
 app.include_router(knowledge_router)

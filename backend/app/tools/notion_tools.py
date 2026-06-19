@@ -1,11 +1,13 @@
 """Notion tools registered in the tool registry for agent use."""
 from __future__ import annotations
+
+import re
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from app.llm import ToolDefinition
-from app.tools.registry import ToolArguments
-from app.tools.notion import NotionPageContent, NotionSearchResult, get_page_content, search_notion
 from app.config import get_settings
+from app.llm import ToolDefinition
+from app.tools.notion import NotionPageContent, NotionSearchResult, get_page_content, search_notion
+from app.tools.registry import ToolArguments
 from app.utils import KnowledgeDatabase
 
 if TYPE_CHECKING:
@@ -64,12 +66,22 @@ async def read_note(args: ToolArguments) -> ReadNoteResult | ToolError:
     if not page_id:
         return {"error": "page_id is required"}
 
+    cleaned_page_id = page_id.replace("-", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", cleaned_page_id):
+        return {
+            "page_id": page_id,
+            "title": "No matching prior note",
+            "properties": {},
+            "content": f"No prior note found for '{page_id}' because it is not a valid Notion page reference.",
+            "last_edited": None,
+            "url": "",
+        }
+
     settings = get_settings()
     if not settings.notion_api_key:
         return {"error": "Notion not configured"}
 
     page_data: NotionPageContent = await get_page_content(page_id)
-    # Truncate content for agent context window
     content = page_data["content"]
     if len(content) > 4000:
         content = content[:4000] + "\n\n[TRUNCATED - content exceeds 4000 chars]"

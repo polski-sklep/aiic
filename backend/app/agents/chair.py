@@ -1,8 +1,8 @@
 """Committee Chair: final decision maker for the report and Ray review."""
 from app.agents.base import BaseAgent
 from app.llm import ModelTier
-from app.utils.types import JSONObject
 from app.utils.citations import format_source_catalog_text
+from app.utils.types import JSONObject
 
 
 class CommitteeChair(BaseAgent):
@@ -19,6 +19,7 @@ class CommitteeChair(BaseAgent):
 
     def get_system_prompt(self, context: JSONObject) -> str:
         from app.memory import get_agent_context
+
         project = context.get("project_name", "Unknown")
         institutional = get_agent_context(self.name)
         report = context.get("draft_report", {})
@@ -26,16 +27,22 @@ class CommitteeChair(BaseAgent):
         risk_veto = context.get("risk_veto", False)
         risk_veto_reason = context.get("risk_veto_reason", "")
         source_catalog = context.get("source_catalog", [])
+        technical_entry = context.get("technical_entry_context", {})
 
         import json
 
         report_text = json.dumps(report, indent=2, default=str)[:6000] if report else "No report available"
         ray_text = json.dumps(ray, indent=2, default=str)[:2000] if ray else "No Ray take available"
+        technical_text = (
+            json.dumps(technical_entry, indent=2, default=str)[:2000]
+            if technical_entry
+            else "No technical entry guidance available"
+        )
         source_text = format_source_catalog_text(source_catalog, limit=60)
 
         veto_text = ""
         if risk_veto:
-            veto_text = f"\n\n⚠️ RISK OFFICER HAS VETOED THIS INVESTMENT.\nReason: {risk_veto_reason}\nYou may acknowledge the veto but cannot override it.\n"
+            veto_text = f"\n\nRISK OFFICER HAS VETOED THIS INVESTMENT.\nReason: {risk_veto_reason}\nYou may acknowledge the veto but cannot override it.\n"
 
         return f"""You are the Committee Chair on the committee.
 
@@ -50,16 +57,20 @@ COMMITTEE REPORT:
 RAY'S INDEPENDENT TAKE:
 {ray_text}
 
+TECHNICAL ENTRY GUIDANCE:
+{technical_text}
+
 SOURCE CATALOG:
 {source_text}
 
 YOUR ROLE:
-1. Review the full report and Ray's contrarian analysis
-2. Identify any conflicts between the main report and Ray's take
-3. Weigh the evidence
-4. If Risk Officer vetoed: acknowledge the veto, the decision is VETO
-5. Otherwise: make the final BUY / PASS / WATCH call with clear reasoning
-6. Define what would change your mind (signposts)
+1. Review the full report and Ray's contrarian analysis.
+2. Identify any conflicts between the main report and Ray's take.
+3. Weigh the evidence.
+4. If Risk Officer vetoed: acknowledge the veto, the decision is VETO.
+5. Otherwise: make the final BUY / PASS / WATCH call with clear reasoning.
+6. Use the technical entry guidance for entry strategy and review timing, but do not let it override the investment decision itself.
+7. Define what would change your mind (signposts).
 
 CITATION RULES:
 - Every factual claim, interpretive judgement, or recommendation in narrative fields must use inline markers like [1] or [1][2].

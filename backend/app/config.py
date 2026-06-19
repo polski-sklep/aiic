@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -24,13 +25,13 @@ class Settings(BaseSettings):
     # Auth
     google_client_id: str = ""
     google_client_secret: str = ""
-        jwt_secret: str = ""  # Required: set a strong random secret in .env (e.g. openssl rand -hex 32)
+    jwt_secret: str = ""  # Required: set a strong random secret in .env (e.g. openssl rand -hex 32)
 
     # Notion
     notion_api_key: str = ""
     notion_transcripts_db: str = ""  # Database ID for IC call transcripts
-    notion_learnings_db: str = ""    # Database ID for learnings/notes
-    notion_projects_db: str = ""     # Database ID for project evaluations
+    notion_learnings_db: str = ""  # Database ID for learnings/notes
+    notion_projects_db: str = ""  # Database ID for project evaluations
 
     # App
     backend_url: str = "http://localhost:8100"
@@ -38,8 +39,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # LLM Model Defaults
-    sonnet_model: str = "claude-sonnet-4-20250514"
-    opus_model: str = "claude-opus-4-20250514"
+    sonnet_model: str = "claude-sonnet-4-6"
+    opus_model: str = "claude-opus-4-8"
     haiku_model: str = "claude-haiku-4-5-20251001"
     openai_strong_model: str = "gpt-4o"
     openai_fast_model: str = "gpt-4o-mini"

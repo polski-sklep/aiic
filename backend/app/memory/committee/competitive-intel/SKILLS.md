@@ -26,15 +26,16 @@ A differentiation memo with strength ratings.
 
 ## Skill 3: Strategic Threat Mapping
 ### Purpose
-Identify who can weaken the case and how.
+Identify who can weaken the case and how, and what would strengthen it.
 
 ### Procedure
 1. Review competitor momentum, adjacent substitutes, and market concentration.
 2. Identify threats from stronger incumbents, faster movers, or simpler alternatives.
 3. Note where execution, distribution, or liquidity disadvantages may matter.
+4. Run the map in the other direction: where a distribution or demand mechanism exists — a listing, an integration, a partnership, a coverage initiation — assess what it delivers if it lands as designed, not only the risk that it does not.
 
 ### Output
-A threat map showing strategic pressure points and likely attack vectors.
+A threat map showing strategic pressure points and likely attack vectors, alongside the distribution and demand events that would work in the case's favour.
 
 ## Skill 4: Relative Positioning Summary
 ### Purpose

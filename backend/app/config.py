@@ -9,7 +9,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
 
     # Database
-    database_url: str = "postgresql+asyncpg://committee:committee_dev_pw@localhost:5432/committee"
+    # No credential in the default. Compose always supplies DATABASE_URL, built
+    # from POSTGRES_PASSWORD, so this default is only ever reached by a caller
+    # running outside the stack — and a plausible-looking password baked into
+    # source is exactly what gets copied into a real deployment (QA-036). An
+    # empty value fails fast and visibly at connect time instead.
+    database_url: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -22,10 +27,17 @@ class Settings(BaseSettings):
     brave_search_api_key: str = ""
     x_bearer_token: str = ""
 
-    # Auth
+    # Auth — declared but unused. There is no auth layer: no endpoint reads any
+    # of these and nothing signs or verifies a token, so an empty jwt_secret
+    # cannot weaken anything that exists (QA-036/037). They are kept declared
+    # rather than deleted so that an existing .env carrying them keeps parsing,
+    # and so the absence of auth stays visible here rather than looking like an
+    # oversight. If auth is ever added, jwt_secret must be made required and
+    # startup must refuse an empty value — see docs/reviews/security-review.md
+    # SEC-03.
     google_client_id: str = ""
     google_client_secret: str = ""
-    jwt_secret: str = ""  # Required: set a strong random secret in .env (e.g. openssl rand -hex 32)
+    jwt_secret: str = ""
 
     # Notion
     notion_api_key: str = ""

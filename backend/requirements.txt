@@ -1,16 +1,53 @@
+# Runtime dependencies. Pinned exactly — this set is what produced six weeks of
+# stable behaviour on the VPS. Dev/CI tooling lives in requirements-dev.txt and
+# is never installed into the production image.
+#
+# Vulnerability status is audited in docs/reviews/dependency-audit.md.
+# Re-run the audit with `make audit`.
+
+# --- Web framework ---
 fastapi==0.115.6
+# NOTE: fastapi 0.115.6 pins starlette<0.42.0, so starlette resolves to 0.41.3,
+# which carries 7 open advisories. All 7 are UNREACHABLE from this codebase
+# today (no StaticFiles, no FileResponse, no request.form(), no HTTPEndpoint,
+# Linux only) and clearing them all requires fastapi>=0.133 — a 20-minor jump
+# on a runtime that has been stable for six weeks. Deferred, with reasoning, in
+# docs/reviews/dependency-audit.md. Re-evaluate before agent/ui-report mounts
+# StaticFiles: that makes CVE-2025-62727 reachable.
 uvicorn[standard]==0.34.0
+
+# --- Persistence ---
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
-alembic==1.14.1
+alembic==1.14.1          # pinned but unconfigured; see backend/migrations/README.md
 pgvector==0.3.6
+
+# --- LLM providers ---
 anthropic==0.42.0
-openai==1.58.1
+openai==1.58.1           # embeddings only (text-embedding-3-small)
+
+# --- HTTP / models ---
 httpx==0.28.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
-python-jose[cryptography]==3.3.0
+
+# --- Misc ---
 arq==0.26.1
 tiktoken==0.8.0
-python-multipart==0.0.20
+python-multipart==0.0.31 # was 0.0.20. Clears 7 advisories including
+                         # CVE-2026-53539 and CVE-2026-42561 (both high).
+                         # Not imported by app code — FastAPI only loads it for
+                         # Form/File endpoints and there are none. Bumped
+                         # anyway: leaf dependency, no API surface we touch.
 notion-client==2.2.1
+
+# --- REMOVED ---
+# python-jose[cryptography]==3.3.0 — removed 24 Aug 2026.
+#   Carried CVE-2024-33663 (CRITICAL, algorithm confusion with OpenSSH ECDSA
+#   keys) and CVE-2024-33664, and pulled in ecdsa (CVE-2024-23342, upstream
+#   WONTFIX) and pyasn1 0.4.8 (4 advisories).
+#   Nothing in this repo imports `jose`. `settings.jwt_secret`,
+#   `settings.google_client_id` and `settings.google_client_secret` exist in
+#   app/config.py but are read by no code — there is no auth layer at all.
+#   Deleting it removes 7 advisories without changing one line of behaviour.
+#   If auth is ever built, add it back at >=3.4.0, or prefer `pyjwt`.

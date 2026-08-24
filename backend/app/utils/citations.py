@@ -1,13 +1,39 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import cast
+from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from app.utils.types import FootnoteRecord, SourceRecord, ToolArguments, ToolResult
 
 
 INLINE_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+#: What a citation marker becomes when it cannot be mapped to a source.
+#:
+#: An agent that writes "[1]" and supplies no matching footnote (QA-001), or
+#: cites "[3]" having defined only two (QA-002), used to have its marker left
+#: verbatim. The marker is then resolved against the *merged* footnote list, so
+#: it points at whatever another agent happened to register in that slot — and
+#: a dangling "[3]" turns into a perfectly valid reference to the wrong source
+#: the moment a third source is merged.
+#:
+#: The marker is replaced rather than deleted. Deleting it would leave the
+#: sentence reading as an ordinary unsourced assertion, indistinguishable from
+#: prose that never claimed a source; the reader loses the fact that the agent
+#: asserted evidence and failed to produce it. This token says so, carries no
+#: number, and can never be resolved into a footnote by any later merge.
+UNRESOLVED_CITATION = "[unverified]"
+
+#: Characters that may follow a citation marker. A marker sits at the end of the
+#: clause it supports: end of text, sentence punctuation, or a closing
+#: delimiter. A bracketed integer followed by anything else is prose — "only [2]
+#: of the five audits", "the top [10] holders" — and rewriting it would silently
+#: change a stated quantity (QA-006).
+_CITATION_TRAILERS = frozenset('.,;:!?)]}"\'”’\n\r')
+_ADJACENT_MARKER_RE = re.compile(r"\s*\[\d+\]")
 
 
 def _now_iso() -> str:
@@ -21,17 +47,61 @@ def _shorten(text: str, limit: int = 220) -> str:
     return cleaned[: limit - 3].rstrip() + "..."
 
 
+#: A bare host, optionally with a path/query/fragment. Requires at least one dot
+#: and no whitespace, which is what separates "docs.aave.com/governance" from
+#: "N/A", "TBD", "none" and "internal knowledge".
+_BARE_HOST_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+"
+    r"(?:[:/?#].*)?$"
+)
+
+#: Handles are @name — letters, digits and underscore, nothing else.
+_HANDLE_RE = re.compile(r"^@[A-Za-z0-9_]{1,30}$")
+
+
 def _normalize_url(url: object) -> str:
+    """Coerce a citation target to a URL, or to "" if it is not one.
+
+    QA-004: anything non-empty used to survive, so a model writing
+    ``"url": "N/A"`` or ``"internal knowledge"`` got a real entry in the source
+    catalog — and because the dedupe key was the lowercased string, one agent's
+    "N/A" and another's "n/a" merged into a single footnote. Two unrelated
+    unsourced claims then shared one fabricated citation.
+    """
     if not url:
         return ""
     value = str(url).strip()
-    if value.startswith("@"):
+    if not value:
+        return ""
+    if _HANDLE_RE.match(value):
         return f"https://x.com/{value[1:]}"
     if value.startswith("http://") or value.startswith("https://"):
         return value
-    if value.startswith("x.com/") or value.startswith("twitter.com/"):
+    if _BARE_HOST_RE.match(value):
         return "https://" + value
-    return value
+    return ""
+
+
+def _dedupe_key(url: str) -> str:
+    """Identity key for a URL.
+
+    QA-005, both directions. Scheme and host are case-insensitive; the path is
+    not, so lowercasing the whole URL merged ``/Aave/...`` with ``/aave/...``.
+    A fragment names a position within one document and a trailing slash names
+    the same resource, so neither may split one page into several footnotes.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url.strip()
+    if not parts.netloc:
+        return url.strip()
+
+    path = parts.path.rstrip("/")
+    return urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), path, parts.query, "")
+    )
 
 
 def make_source(
@@ -68,7 +138,7 @@ def dedupe_sources(sources: list[SourceRecord]) -> list[SourceRecord]:
         url = _normalize_url(source.get("url"))
         if not url:
             continue
-        key = url.lower()
+        key = _dedupe_key(url)
         source = cast(SourceRecord, dict(source))
         source["url"] = url
 
@@ -91,6 +161,39 @@ def dedupe_sources(sources: list[SourceRecord]) -> list[SourceRecord]:
     return deduped
 
 
+#: Keys that echo the request or describe the envelope rather than carrying data.
+#: A result made only of these attests to nothing.
+_ENVELOPE_METADATA_KEYS = frozenset(
+    {
+        "coin_id", "currency", "symbol", "ticker", "name", "slug", "protocol",
+        "query", "database", "interval", "limit", "tool", "tool_name", "source",
+        "status", "as_of", "date", "requested_at", "retrieved_at", "note",
+        "data_status", "trading_pair",
+    }
+)
+
+
+def _result_carries_data(result: Mapping[str, Any]) -> bool:
+    """True if the result holds at least one datum, not just request echoes.
+
+    QA-031: the only failure signal checked was ``result.get("error")``. A
+    CoinGecko call that returns a full success envelope with every metric None —
+    which is what an over-quota or unquoted-currency response produces — still
+    had a CoinGecko source record attached, so the report cited CoinGecko as
+    evidence for a number CoinGecko never returned. A fabricated citation is
+    worse than a missing one: it survives review.
+    """
+    for key, value in result.items():
+        if key in _ENVELOPE_METADATA_KEYS or key == "error":
+            continue
+        if value is None:
+            continue
+        if isinstance(value, (str, bytes, list, tuple, dict, set)) and len(value) == 0:
+            continue
+        return True
+    return False
+
+
 def extract_sources_from_tool_result(
     tool_name: str,
     arguments: ToolArguments,
@@ -99,6 +202,8 @@ def extract_sources_from_tool_result(
     agent_name: str = "",
 ) -> list[SourceRecord]:
     if not isinstance(result, dict) or result.get("error"):
+        return []
+    if not _result_carries_data(result):
         return []
 
     extracted: list[SourceRecord] = []
@@ -308,9 +413,8 @@ def normalize_footnotes(raw_footnotes: object) -> list[FootnoteRecord]:
     for item in raw_footnotes:
         if not isinstance(item, dict):
             continue
-        try:
-            local_id = int(item.get("id"))
-        except (TypeError, ValueError):
+        local_id = _coerce_footnote_id(item.get("id"))
+        if local_id is None:
             continue
 
         url = _normalize_url(item.get("url"))
@@ -331,19 +435,102 @@ def normalize_footnotes(raw_footnotes: object) -> list[FootnoteRecord]:
     return normalized
 
 
+def _coerce_footnote_id(raw: object) -> int | None:
+    """Accept only ids that unambiguously name a footnote number.
+
+    QA-009: ``int(raw)`` truncated 1.9 to 1 and True to 1, manufacturing
+    duplicate ids out of distinct inputs — which then feeds QA-003, where a
+    duplicate silently repoints the citation. A value that is not already a
+    whole number is not a footnote id, so it is dropped rather than guessed at.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    if isinstance(raw, float):
+        return int(raw) if raw.is_integer() and raw > 0 else None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.isdigit() and int(text) > 0:
+            return int(text)
+    return None
+
+
+def _is_citation_position(text: str, end: int) -> bool:
+    """True if the marker ending at ``end`` sits where a citation sits.
+
+    QA-006: ``INLINE_CITATION_RE`` matches any bracketed integer, so prose like
+    "only [2] of the five audits are public" had its *quantity* rewritten to
+    whatever global id local footnote 2 mapped to. The reader saw "only [4] of
+    the five audits" — a stated figure changed value, and a factual claim was
+    corrupted, not merely mis-cited.
+
+    A citation trails the clause it supports. Anything else is prose and is left
+    exactly as the agent wrote it.
+    """
+    index = end
+    while True:
+        adjacent = _ADJACENT_MARKER_RE.match(text, index)
+        if not adjacent:
+            break
+        index = adjacent.end()
+    if index >= len(text):
+        return True
+    return text[index] in _CITATION_TRAILERS
+
+
+def _renumber_merged(merged: list[FootnoteRecord]) -> list[FootnoteRecord]:
+    """Restore ``merged[i]["id"] == i + 1``.
+
+    QA-007: both the lookup (``idx + 1``) and the allocation (``len(merged) + 1``)
+    assume that invariant, and nothing enforced it. A merged list arriving from a
+    resumed render or a filtered list produced ids inconsistent with the numbers
+    written into the prose. Making the function establish what it relies on is
+    cheaper than making every caller promise it.
+    """
+    cleaned: list[FootnoteRecord] = []
+    for item in merged:
+        if not isinstance(item, dict):
+            continue
+        url = _normalize_url(item.get("url"))
+        if not url:
+            continue
+        entry = cast(FootnoteRecord, dict(item))
+        entry["url"] = url
+        entry["id"] = len(cleaned) + 1
+        cleaned.append(entry)
+
+    merged[:] = cleaned
+    return merged
+
+
 def reindex_citations(
     text: str,
     footnotes: list[FootnoteRecord],
     merged: list[FootnoteRecord],
 ) -> tuple[str, list[FootnoteRecord]]:
-    if not text or not footnotes:
+    """Rewrite one agent's local citation numbers into the merged id space.
+
+    Every ``[N]`` in ``text`` that sits in a citation position ends up as either
+    a correct global id or :data:`UNRESOLVED_CITATION`. It is never left as a
+    number the agent did not earn: an unmapped marker resolves against whatever
+    another agent registered in that slot, and a dangling one becomes a valid
+    reference to the wrong source as soon as the merged list grows past it
+    (QA-001, QA-002).
+    """
+    if not text:
         return text, merged
 
+    # QA-008: only output from normalize_footnotes was safe to index into.
+    # Normalising here is idempotent and makes every caller safe.
+    footnotes = normalize_footnotes(footnotes)
+    merged = _renumber_merged(merged)
+
     mapping: dict[int, int] = {}
-    existing_by_url = {item["url"].lower(): idx + 1 for idx, item in enumerate(merged)}
+    existing_by_url = {_dedupe_key(item["url"]): item["id"] for item in merged}
 
     for footnote in footnotes:
-        url_key = footnote["url"].lower()
+        url_key = _dedupe_key(footnote["url"])
         global_id = existing_by_url.get(url_key)
         if global_id is None:
             global_id = len(merged) + 1
@@ -362,14 +549,16 @@ def reindex_citations(
             if not existing.get("supports") and footnote.get("supports"):
                 existing["supports"] = footnote["supports"]
 
-        mapping[footnote["id"]] = global_id
+        # QA-003: this was an assignment, so two footnotes both numbered 1 left
+        # every [1] in the prose pointing at the second URL while the first was
+        # registered and orphaned. First definition wins: it is the one the
+        # agent was writing about when it first used the marker.
+        mapping.setdefault(footnote["id"], global_id)
 
     def replace(match: re.Match[str]) -> str:
-        try:
-            local_id = int(match.group(1))
-        except ValueError:
+        if not _is_citation_position(text, match.end()):
             return match.group(0)
-        global_id = mapping.get(local_id)
-        return f"[{global_id}]" if global_id is not None else match.group(0)
+        global_id = mapping.get(int(match.group(1)))
+        return f"[{global_id}]" if global_id is not None else UNRESOLVED_CITATION
 
     return INLINE_CITATION_RE.sub(replace, text), merged

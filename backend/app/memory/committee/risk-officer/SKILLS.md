@@ -1,38 +1,44 @@
 # SKILLS
 
-## Skill 1: Downside Mapping
+## Skill 1: Exit-Path Trace
 ### Purpose
-Identify the main ways the case can fail and how bad the damage could be.
-
+Establish whether capital can leave, by what route, and controlled by whom.
 ### Procedure
-1. Define the proposed action and exposure.
-2. Identify direct, indirect, and second-order failure paths.
-3. Rank them by severity, plausibility, and irreversibility.
-
+1. Name the contract or account the position's funds enter.
+2. Name every party that can move, freeze, pause, seize, or dilute them, and
+   what constrains that party — timelock, bond, multisig threshold, or nothing.
+3. Confirm the withdraw path is permissionless and live.
 ### Output
-A downside scenario map with severity and likely triggers.
+Exit path, controllers, constraints. An unnamed controller is a gap, and gaps
+are flagged, not vetoed.
 
-## Skill 2: Assumption Stress Testing
+## Skill 2: Closed-List Adjudication
 ### Purpose
-Find which assumptions are carrying the case and test how fragile they are.
-
+Rule on each condition in CONSTRAINTS, one at a time.
 ### Procedure
-1. Extract the key assumptions from specialist outputs.
-2. Test what happens if each one weakens or fails.
-3. Mark which assumptions are load-bearing versus optional.
-
+1. For each, record fires / does not fire / cannot determine.
+2. Cite the fact behind each verdict.
+3. Cannot-determine is a flag. It is never a veto.
 ### Output
-A fragile assumptions list with stress-test notes.
+One verdict per condition, each with evidence.
 
-## Skill 3: Stop Condition Design
+## Skill 3: Open-Clause Construction
 ### Purpose
-Define when the committee should halt, defer, reduce, or reject action.
-A stop-condition list usable by Governance Chief and Portfolio Manager, including possible veto triggers.
-
+Catch a trap the closed list does not name.
 ### Procedure
-1. Identify the point where risk becomes unacceptably hard to bound.
-2. Translate that into explicit stop conditions.
-3. Tie each stop condition to observable signals where possible.
-
+1. Name one fact you verified.
+2. State the chain from that fact to irrecoverable loss, step by step, with no
+   step assumed.
+3. If any step is inference rather than observation, downgrade to a flag.
 ### Output
-A stop-condition list usable by Governance Chief and Portfolio Manager.
+An `open_clause` veto, or a flag.
+
+## Skill 4: Depth Handoff
+### Purpose
+Separate the degenerate liquidity case from the sizing case.
+### Procedure
+1. Test whether exit is possible at any size at all.
+2. If it is, the constraint is a size, not a stop.
+### Output
+Either a liquidity veto, or a maximum exitable size handed to the Portfolio
+Manager.

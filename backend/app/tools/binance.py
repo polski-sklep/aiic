@@ -1,27 +1,101 @@
 """Binance public API tools for candles, orderbook depth, and derived TA levels."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import cast
 
 import httpx
 
 from app.llm import JSONValue, SourceReference, ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.tools.http_errors import (
+    BAD_REQUEST,
+    NOT_FOUND,
+    NO_DATA,
+    UNAVAILABLE,
+    ToolFailure,
+    http_failure,
+    tool_failure,
+    transport_failure,
+)
+from app.utils.types import ToolArguments
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 BINANCE_API = "https://api.binance.com/api/v3"
 COMMON_QUOTES = ("USDT", "USDC", "FDUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "BUSD")
 
+SERVICE = "Binance"
 
-class ToolError(TypedDict, total=False):
-    error: str
-    details: str
+#: Binance's own code for an unrecognised trading pair. Every other 400 code is
+#: a complaint about the request we sent, not a statement about the symbol.
+_UNKNOWN_SYMBOL_CODE = -1121
+
+ToolError = ToolFailure
 
 
 def _normalize_symbol(raw_symbol: object) -> str:
     return str(raw_symbol or "").upper().replace("-", "").replace("/", "").strip()
+
+
+def _coerce_limit(raw: object, default: int, maximum: int) -> int:
+    """Validate a ``limit`` argument instead of coercing whatever arrives.
+
+    QA-033: ``isinstance(raw, int | float)`` let ``True`` through as 1 (one
+    candle), silently discarded the numeric string ``"500"`` in favour of the
+    default, and passed ``0`` and ``-5`` straight to Binance — which 400s, which
+    QA-030 then mislabelled as "symbol not found on Binance".
+    """
+    if isinstance(raw, bool) or raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < 1:
+        return default
+    return min(value, maximum)
+
+
+def _status_failure(symbol: str, response: httpx.Response, operation: str) -> ToolFailure | None:
+    """Map a Binance response status to the shared failure vocabulary.
+
+    QA-030: every 400 was reported as "Symbol 'X' not found on Binance spot
+    markets." Binance 400s for a malformed limit, a bad interval and an unknown
+    symbol alike, and the body carries the real reason. The Technical Analyst
+    reading the old message concluded the token had no spot listing — a
+    materially wrong statement about liquidity and entry feasibility — when the
+    actual fault was in the arguments the model sent.
+    """
+    if response.status_code == 200:
+        return None
+
+    if response.status_code == 451:
+        return tool_failure(
+            UNAVAILABLE, f"{SERVICE} market data is unavailable from this region."
+        )
+
+    if response.status_code == 400:
+        code, message = _binance_error(response)
+        if code == _UNKNOWN_SYMBOL_CODE:
+            return tool_failure(
+                NOT_FOUND, f"Symbol '{symbol}' not found on {SERVICE} spot markets."
+            )
+        return tool_failure(
+            BAD_REQUEST,
+            f"{SERVICE} rejected the {operation} request: {message or 'no reason given'}.",
+        )
+
+    return http_failure(SERVICE, response.status_code)
+
+
+def _binance_error(response: httpx.Response) -> tuple[int | None, str]:
+    try:
+        body = response.json()
+    except ValueError:
+        return None, ""
+    if not isinstance(body, dict):
+        return None, ""
+    code = body.get("code")
+    return (code if isinstance(code, int) else None), str(body.get("msg", ""))
 
 
 def _split_symbol(symbol: str) -> tuple[str, str]:
@@ -54,32 +128,33 @@ async def get_klines(args: ToolArguments) -> dict[str, JSONValue] | ToolError:
     """Fetch OHLCV candles for a spot trading pair."""
     symbol = _normalize_symbol(args.get("symbol", ""))
     interval = str(args.get("interval", "4h")).strip()
-    requested_limit = args.get("limit", 200)
-    limit = min(int(requested_limit) if isinstance(requested_limit, int | float) else 200, 500)
+    limit = _coerce_limit(args.get("limit"), default=200, maximum=500)
 
     valid_intervals = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"}
     if not symbol:
-        return {"error": "symbol is required"}
+        return tool_failure(BAD_REQUEST, "symbol is required")
     if interval not in valid_intervals:
-        return {"error": f"Invalid interval. Use one of: {sorted(valid_intervals)}"}
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(
-            f"{BINANCE_API}/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
+        return tool_failure(
+            BAD_REQUEST, f"Invalid interval. Use one of: {sorted(valid_intervals)}"
         )
 
-    if response.status_code == 400:
-        return {"error": f"Symbol '{symbol}' not found on Binance spot markets."}
-    if response.status_code == 451:
-        return {"error": "Binance market data is unavailable from this region."}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{BINANCE_API}/klines",
+                params={"symbol": symbol, "interval": interval, "limit": limit},
+            )
+    except httpx.HTTPError as exc:
+        return transport_failure(SERVICE, exc)
+
+    failure = _status_failure(symbol, response, "klines")
+    if failure is not None:
+        return failure
 
     try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        return {"error": f"Binance klines request failed with status {exc.response.status_code}."}
-
-    raw = cast(list[list[JSONValue]], response.json())
+        raw = cast(list[list[JSONValue]], response.json())
+    except ValueError as exc:
+        return transport_failure(SERVICE, exc)
     candles: list[dict[str, JSONValue]] = []
     for row in raw:
         candles.append(
@@ -133,33 +208,34 @@ async def get_klines(args: ToolArguments) -> dict[str, JSONValue] | ToolError:
 async def get_orderbook_depth(args: ToolArguments) -> dict[str, JSONValue] | ToolError:
     """Fetch top-of-book depth and highlight large nearby liquidity walls."""
     symbol = _normalize_symbol(args.get("symbol", ""))
-    requested_limit = args.get("limit", 100)
-    limit = min(int(requested_limit) if isinstance(requested_limit, int | float) else 100, 500)
+    limit = _coerce_limit(args.get("limit"), default=100, maximum=500)
 
     if not symbol:
-        return {"error": "symbol is required"}
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(
-            f"{BINANCE_API}/depth",
-            params={"symbol": symbol, "limit": limit},
-        )
-
-    if response.status_code == 400:
-        return {"error": f"Symbol '{symbol}' not found on Binance spot markets."}
-    if response.status_code == 451:
-        return {"error": "Binance market data is unavailable from this region."}
+        return tool_failure(BAD_REQUEST, "symbol is required")
 
     try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        return {"error": f"Binance depth request failed with status {exc.response.status_code}."}
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{BINANCE_API}/depth",
+                params={"symbol": symbol, "limit": limit},
+            )
+    except httpx.HTTPError as exc:
+        return transport_failure(SERVICE, exc)
 
-    data = cast(dict[str, list[list[str]]], response.json())
+    failure = _status_failure(symbol, response, "depth")
+    if failure is not None:
+        return failure
+
+    try:
+        data = cast(dict[str, list[list[str]]], response.json())
+    except ValueError as exc:
+        return transport_failure(SERVICE, exc)
     bids = [(float(price), float(quantity)) for price, quantity in data.get("bids", [])]
     asks = [(float(price), float(quantity)) for price, quantity in data.get("asks", [])]
     if not bids or not asks:
-        return {"error": "Empty orderbook received from Binance."}
+        return tool_failure(
+            NO_DATA, f"Empty orderbook received from {SERVICE} for '{symbol}'."
+        )
 
     best_bid = bids[0][0]
     best_ask = asks[0][0]
@@ -226,7 +302,7 @@ async def compute_technical_levels(args: ToolArguments) -> dict[str, JSONValue] 
     symbol = _normalize_symbol(args.get("symbol", ""))
     interval = str(args.get("interval", "4h")).strip() or "4h"
     if not symbol:
-        return {"error": "symbol is required"}
+        return tool_failure(BAD_REQUEST, "symbol is required")
 
     klines_result = await get_klines({"symbol": symbol, "interval": interval, "limit": 200})
     if "error" in klines_result:
@@ -234,7 +310,11 @@ async def compute_technical_levels(args: ToolArguments) -> dict[str, JSONValue] 
 
     candles = cast(list[dict[str, JSONValue]], klines_result["candles"])
     if len(candles) < 50:
-        return {"error": "Insufficient data for technical analysis (need at least 50 candles)."}
+        return tool_failure(
+            NO_DATA,
+            f"Insufficient data for technical analysis: {SERVICE} returned {len(candles)} "
+            f"candles for '{symbol}' and at least 50 are needed.",
+        )
 
     closes = [float(candle["close"]) for candle in candles]
     highs = [float(candle["high"]) for candle in candles]
@@ -389,7 +469,7 @@ async def compute_technical_levels(args: ToolArguments) -> dict[str, JSONValue] 
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="get_klines",

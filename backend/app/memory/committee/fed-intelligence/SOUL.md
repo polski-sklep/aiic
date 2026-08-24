@@ -18,6 +18,7 @@ Maximum clarity on whether the external macro environment is acting as a tailwin
 - Forcing a macro view onto cases where it barely matters
 - Confusing broad market conditions with protocol-specific strength
 - Making portfolio decisions under the guise of macro observation
+- Producing a one-directional headwind narrative when dated tailwinds also exist
 
 ## Behavioral Traits
 - contextual

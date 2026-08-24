@@ -1,46 +1,35 @@
 # TOOLS
 
-## Allowed Tools
-- Inputs from On-Chain Analyst
-- Inputs from Economics
-- Inputs from Valuation Scorer
-- Inputs from Legal Analyst
-- Inputs from Competitive Intel
-- Inputs from Gov Analyst
-- Inputs from Fed Intelligence
-- Public web sources
-- Market data sources
-- Price and liquidity dashboards
-- Volatility and drawdown data
-- On-chain dashboards where direct inspection is needed
-- Unlock trackers
-- Governance records where relevant
+## Available to you
+`get_price`, `get_token_info` (CoinGecko) · `get_tvl` (DeFiLlama) ·
+`web_search` (Brave) · `search_notes`, `read_note` (Notion archive)
 
-## Preferred Order
-1. Risk-critical specialist outputs from On-Chain Analyst, Economics, and Legal Analyst
-2. Valuation and supply-overhang context
-3. Market structure and liquidity data
-4. Public source verification
-5. Direct dashboard inspection where necessary
+That is the whole list. You have no contract explorer, no chain indexer, no
+multisig or governance reader. Where a closed-list condition needs on-chain
+proof, `web_search` for the audit report, the documentation, the admin-key
+disclosure, or the incident record is the instrument you have.
 
-## Tool Usage Rules
-- Start with specialist outputs rather than rebuilding their work from scratch
-- Use direct tools to verify severity, exposure, timing, and downside pathways
-- Treat On-Chain Analyst as primary for attribution and raw flow truth
-- Treat Economics as primary for incentive fragility and token design meaning
-- Treat Legal Analyst as primary for legal and disclosure-related structural concerns
-- Convert all tool usage into downside-relevant conclusions rather than broad description
-- Preserve traceability for each major risk claim
+## Order
+1. `search_notes` / `read_note` — prior evaluations, and past failures of this
+   project or its category.
+2. The prior agent findings already in your prompt — do not re-derive them.
+3. `web_search` — audits, admin key configuration, custody arrangements,
+   enforcement actions, prior-team history.
+4. `get_tvl`, `get_price`, `get_token_info` — size of exposure and venue
+   reality.
 
-## Tool Limits
-- Do not guess wallet ownership without evidence
-- Do not drift into first-pass tokenomics or legal analysis when those roles already exist
-- Do not confuse volatility with total risk
-- Do not use dashboards as proof without understanding what they actually measure
-- Do not issue veto from intuition alone when observable evidence can be checked
+## Rules
+- Search to confirm a suspected mechanism, not to browse for things to worry
+  about.
+- A tool that returns nothing has told you nothing. It has not shown the
+  condition clear and it has not shown it firing. Record cannot-determine.
+- Never assert wallet ownership, key control, or team identity you have not
+  seen evidenced.
+- Do not redo tokenomics, legal, or competitive analysis. Those agents ran.
 
-## Verification Rules
-- Every material risk claim should be tied to at least one concrete input, dataset, or observed condition
-- Any veto should cite the specific unbounded, non-auditable, or structurally dangerous condition causing it
-- Unknowns must remain visible when they materially affect downside
-- If tool evidence is weak, missing, or contradictory, state that explicitly
+## Evidence bar
+- Every veto cites at least one specific artefact: an audit or its documented
+  absence at a named contract, a disclosed key configuration, a custody
+  statement, an enforcement filing, an on-chain link.
+- "No audit found" is not "unaudited". Say which of the two you established.
+- **A missing tool is never a reason to veto, and never a reason to clear.**

@@ -8,17 +8,12 @@
 - Investor announcements
 - Public web sources
 - X
-- Inputs from Knowledge Agent
-- Inputs from On-Chain Analyst
-- Inputs from Economics
-- Inputs from Gov Analyst
 
 ## Preferred Order
 1. Official legal, governance, and disclosure documents
-2. Knowledge Agent context pack
-3. On-Chain and governance-supporting evidence
-4. Public web sources
-5. X
+2. On-Chain and governance-supporting evidence
+3. Public web sources
+4. X
 
 ## Tool Usage Rules
 - Start with formal disclosures and legal architecture before commentary

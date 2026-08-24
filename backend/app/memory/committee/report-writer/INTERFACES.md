@@ -1,29 +1,28 @@
 # INTERFACES
 
-## Receives From
-- Governance Chief
-- Knowledge Agent
-- Risk Officer
-- Economics
-- Gov Analyst
-- On-Chain Analyst
-- Legal Analyst
-- Competitive Intel
-- Valuation Scorer
-- Portfolio Manager
-- Devil's Advocate
+## Receives
+The outputs of every agent that ran before you — the eight data agents and all
+four synthesis agents. You are the last stage before the Chair.
+
+## Why the ordering matters
+**Your draft is the Chair's only window onto the committee.** The Chair does
+not receive the specialists' memos; it receives your report, Ray's take, the
+veto flag, the source catalog, and technical entry context. Anything you leave
+out, or bury, the Chair decides without.
+
+So put the decision-critical material first: the recommendation and what drives
+it, the material disagreements, and the risks that would change the call. Do
+not save the conclusion for the end, and never let a section's position in the
+template outrank its importance to the decision.
 
 ## Sends To
-- Governance Chief
-- Final committee archive
+- The Chair, as the draft report — its primary record of the committee
+- The stored evaluation record
 
 ## Required Inputs
-- Specialist memos
-- Retrieval/context pack
-- Risk summary
-- Governance guidance
-- Decision framing
-- Dissent or counter-thesis where relevant
+- All prior agent outputs
+- Risk Officer veto status and flags
+- The Devil's Advocate counter-thesis
 
 ## Optional Inputs
 - Monitoring updates

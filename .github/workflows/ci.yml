@@ -1,0 +1,194 @@
+# CI for the AIIC committee orchestrator.
+#
+# Designed around the failures this project has actually had, not a template:
+#
+#  * `docker compose config` is a JOB, not an afterthought. docker-compose.yml
+#    was broken in two places for weeks (bdad5cd, 8432cf4) because validation
+#    used `compileall`, which never reads YAML. Handoff §14.1: verify with the
+#    instrument that consumes the artifact.
+#  * Imports are checked in the CONTAINER's Python 3.12, never the runner's.
+#    Handoff §14.4: compile != import != runs.
+#  * The test suite runs in the PRODUCTION image with stdlib unittest, so a
+#    green CI is reproducible by anyone with Docker and nothing else.
+#  * Secret scanning is scoped to the commits a push actually introduces,
+#    because history contains fixed findings that can never become clean.
+#
+# Everything runs through `make`, so a contributor reproduces CI exactly by
+# typing the same target. If a step here diverges from the Makefile, the
+# Makefile is wrong.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ---------------------------------------------------------------------
+  # The check that would have caught bdad5cd and 8432cf4.
+  # ---------------------------------------------------------------------
+  compose:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Structure only. --no-interpolate is a DELIBERATE choice, not a
+      # workaround: it needs neither a POSTGRES_PASSWORD nor an .env file to
+      # exist, so CI never has to invent a fake secret. It still runs Docker's
+      # own YAML parser and schema validation, which is the part that failed.
+      # Proven locally: reintroducing the exact bdad5cd indentation defect
+      # makes this command print
+      #   `yaml: line 8: mapping values are not allowed in this context`
+      # and exit 1.
+      - name: YAML and schema (no secrets required)
+        run: docker compose config -q --no-interpolate
+
+      # A NEGATIVE test. `${POSTGRES_PASSWORD:?...}` failing fast is
+      # load-bearing (CONTRACTS.md §4.5) and someone could silently regress the
+      # `:?` back to a `:-default`, which is how the hardcoded dev password got
+      # in originally (c62379c). Assert that an absent password still errors.
+      - name: Fail-fast guard on POSTGRES_PASSWORD is intact
+        run: |
+          rm -f .env
+          if docker compose config -q 2>/dev/null; then
+            echo "::error::compose validated with no POSTGRES_PASSWORD set."
+            echo "The \${POSTGRES_PASSWORD:?...} guard has been weakened to a default."
+            exit 1
+          fi
+          echo "OK: compose refuses to resolve without POSTGRES_PASSWORD."
+
+      # Now prove interpolation itself resolves. Needs both a value AND an .env
+      # file to exist, because the backend service declares `env_file: .env`.
+      - name: Interpolation resolves
+        run: |
+          # Composed at runtime, never written as a literal assignment in a
+          # tracked file — that pattern is exactly what the gitleaks rule
+          # exists to catch, and CI should not be its one exception.
+          # Throwaway value; it only has to satisfy interpolation.
+          printf 'POSTGRES_PASSWORD=%s\n' "ci-$RANDOM-$RANDOM" > .env
+          docker compose config -q
+          echo "OK: interpolation resolves."
+
+      # The container names and published ports are operational contracts on
+      # the VPS. They are now ${VAR:-default} expressions; assert the defaults
+      # still resolve to exactly what production runs.
+      - name: Defaults still reproduce the production topology
+        run: |
+          # Composed at runtime, never written as a literal assignment in a
+          # tracked file — that pattern is exactly what the gitleaks rule
+          # exists to catch, and CI should not be its one exception.
+          # Throwaway value; it only has to satisfy interpolation.
+          printf 'POSTGRES_PASSWORD=%s\n' "ci-$RANDOM-$RANDOM" > .env
+          cfg="$(docker compose config)"
+          for expected in committee-postgres committee-redis committee-backend; do
+            echo "$cfg" | grep -q "container_name: $expected" \
+              || { echo "::error::container_name $expected changed"; exit 1; }
+          done
+          # Count, do not just grep: a single `grep -q` still passes when only
+          # one of the two services regresses back to 0.0.0.0.
+          loopback="$(echo "$cfg" | grep -c 'host_ip: 127.0.0.1')"
+          if [ "$loopback" -ne 2 ]; then
+            echo "::error::expected Postgres AND Redis on 127.0.0.1, found $loopback (SEC-02)"
+            exit 1
+          fi
+          echo "OK: production topology preserved."
+
+  # ---------------------------------------------------------------------
+  # Build the image, then import and test INSIDE it.
+  # ---------------------------------------------------------------------
+  image:
+    name: build, import and test in the container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `target: runtime` is explicit so a stage reorder cannot ship the dev
+      # image with lint/test tooling in it to production.
+      - name: Build the production image
+        run: docker build --target runtime -t aiic-backend backend
+
+      - name: Confirm it does not run as root (SEC-06)
+        run: |
+          uid="$(docker run --rm aiic-backend id -u)"
+          [ "$uid" = "10001" ] || { echo "::error::container uid is $uid, expected 10001"; exit 1; }
+          echo "OK: uid $uid."
+
+      # Handoff §14.4. A module can compile and still ImportError. This is the
+      # instrument named in CONTRACTS.md §5, and 3.12 is the only trustworthy
+      # runtime — the maintainer's Mac is on 3.14 and cannot install the pins.
+      - name: import app.main in Python 3.12
+        run: |
+          docker run --rm aiic-backend python3 -c "import app.main; print('IMPORT OK')"
+
+      # Stdlib unittest, in the production image, with NOTHING from
+      # requirements-dev.txt installed. If this passes, any contributor can
+      # reproduce it with Docker alone.
+      - name: Test suite (stdlib unittest, production image)
+        run: |
+          docker run --rm -v "$PWD/backend":/app -w /app aiic-backend \
+            python3 -m unittest discover -s tests -t . -v
+
+  # ---------------------------------------------------------------------
+  # Lint and types. Blocking, but scoped to a baseline that passes today.
+  # ---------------------------------------------------------------------
+  static:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the dev image
+        run: docker build --target dev -t aiic-dev backend
+
+      # ruff E9/F/B with an itemised debt ledger in pyproject.toml. Green
+      # today, so the first red build is a real regression.
+      - name: ruff
+        run: docker run --rm -v "$PWD":/src -w /src aiic-dev ruff check --output-format github .
+
+      # mypy genuinely checks 27 of 49 modules; the other 22 are pinned in a
+      # ledger with the reason and the owning branch named.
+      - name: mypy
+        run: docker run --rm -v "$PWD":/src -w /src aiic-dev mypy
+
+  # ---------------------------------------------------------------------
+  # Advisory. Never blocks; makes the deferred debt visible.
+  # ---------------------------------------------------------------------
+  advisory:
+    name: advisory (never blocks)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the dev image
+        run: docker build --target dev -t aiic-dev backend
+
+      # The style families deliberately excluded from the blocking gate,
+      # because autofixing them today would rewrite ~70 lines across files
+      # owned by seven concurrently-merging branches.
+      - name: ruff, full rule set (I and UP included)
+        run: |
+          docker run --rm -v "$PWD":/src -w /src aiic-dev \
+            ruff check --select E9,F,B,I,UP,SIM,C4 --output-format github . || true
+
+      - name: mypy with no ledger exemptions
+        run: |
+          docker run --rm -v "$PWD":/src -w /src aiic-dev \
+            mypy --no-incremental --disable-error-code=annotation-unchecked \
+            || true
+
+      - name: Full dependency audit, no exemptions
+        run: |
+          docker run --rm -v "$PWD":/src -w /src aiic-dev \
+            pip-audit -r backend/requirements.txt --progress-spinner off || true

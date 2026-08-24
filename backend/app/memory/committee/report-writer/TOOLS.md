@@ -11,7 +11,7 @@
 1. Specialist memos
 2. Governance guidance
 3. Prior approved report templates
-4. Context pack
+4. Prior agent outputs
 5. Supporting source archive
 
 ## Tool Usage Rules

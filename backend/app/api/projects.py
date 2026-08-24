@@ -1,5 +1,6 @@
 from __future__ import annotations
-import uuid
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,10 +52,16 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db))
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    """Get project details with evaluation history."""
+async def get_project(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get project details with evaluation history.
+
+    `project_id` is typed `UUID` so FastAPI rejects a malformed id with a 422
+    before the handler runs. It used to be `str`, handed straight to
+    `uuid.UUID(...)`, which raised ValueError and surfaced as a 500 — the same
+    pattern `api/reports.py` and `api/evaluate.py` already get right.
+    """
     result = await db.execute(
-        select(Project).where(Project.id == uuid.UUID(project_id))
+        select(Project).where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
     if not project:

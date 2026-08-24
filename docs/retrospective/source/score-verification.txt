@@ -1,0 +1,20 @@
+project     ledger  recomputed   delta  dropped agents
+aave         77.20       77.20    0.00  -
+plasma       34.30       34.29   -0.01  -
+geodnet      62.60       62.60   -0.00  -
+ethena       53.20       53.18   -0.02  legal_regulatory
+morpho       65.60       65.60    0.00  -
+pendle       62.30       62.25   -0.05  -
+
+agent                 n  mean dev vs composite
+maturation_scorer     6                   +8.0   w=0.10
+tech_infra_analyst    6                   +7.3   w=0.15
+legal_regulatory      5                   +5.8   w=0.05
+competitive_intel     6                   +3.1   w=0.10
+tokenomics_analyst    6                   +2.1   w=0.15
+governance_analyst    6                   -1.4   w=0.08
+onchain_analyst       6                   -2.5   w=0.12
+portfolio_manager     6                   -5.2   w=0.05
+risk_officer          6                   -8.4   w=0.15
+field_intel           6                  -17.0   w=0.05
+devils_advocate       5                  -27.0   unweighted

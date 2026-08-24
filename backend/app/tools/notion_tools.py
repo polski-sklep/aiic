@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict
 
 from app.config import get_settings
 from app.llm import ToolDefinition
 from app.tools.notion import NotionPageContent, NotionSearchResult, get_page_content, search_notion
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.tools.http_errors import BAD_REQUEST, NOT_CONFIGURED, tool_failure
+from app.utils.types import ToolArguments
 from app.utils import KnowledgeDatabase
-
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 
 class SearchNotesResult(TypedDict):
@@ -34,22 +33,50 @@ class ToolError(TypedDict, total=False):
     error: str
 
 
+#: Requestable database name -> the Settings attribute holding its id.
+_DATABASE_SETTINGS = {
+    "transcripts": "notion_transcripts_db",
+    "learnings": "notion_learnings_db",
+    "projects": "notion_projects_db",
+}
+
+
 async def search_notes(args: ToolArguments) -> SearchNotesResult | ToolError:
-    """Search Notion for notes, transcripts, and past evaluations."""
-    query = str(args.get("query", "")).strip()
-    database = cast(KnowledgeDatabase, str(args.get("database", "all")))
+    """Search Notion for notes, transcripts, and past evaluations.
+
+    QA-034: when the requested database had no id configured, ``db_id`` stayed
+    None and the search ran across *everything* — while the result still echoed
+    ``{"database": "learnings"}``. The agent, and every later reader of
+    ``agent_outputs``, was told the search was scoped when it was not, so
+    results from other databases were attributed to the one asked for. Any
+    unrecognised database value behaved the same way.
+
+    An unscoped search is still available, by asking for it: ``database: "all"``.
+    """
+    query = str(args.get("query", "") or "").strip()
+    database = str(args.get("database", "all") or "all").strip().lower()
 
     settings = get_settings()
     if not settings.notion_api_key:
         return {"error": "Notion not configured"}
 
+    if database != "all" and database not in _DATABASE_SETTINGS:
+        return tool_failure(
+            BAD_REQUEST,
+            f"Unknown Notion database {database!r}. Use one of: "
+            f"all, {', '.join(sorted(_DATABASE_SETTINGS))}.",
+        )
+
     db_id = None
-    if database == "transcripts" and settings.notion_transcripts_db:
-        db_id = settings.notion_transcripts_db
-    elif database == "learnings" and settings.notion_learnings_db:
-        db_id = settings.notion_learnings_db
-    elif database == "projects" and settings.notion_projects_db:
-        db_id = settings.notion_projects_db
+    if database != "all":
+        db_id = getattr(settings, _DATABASE_SETTINGS[database], "") or None
+        if db_id is None:
+            return tool_failure(
+                NOT_CONFIGURED,
+                f"The Notion '{database}' database is not configured, so no search was run. "
+                f"Searching unscoped and labelling the results '{database}' would have "
+                f"attributed other databases' notes to it.",
+            )
 
     results = await search_notion(query, database_id=db_id, limit=5)
     return {
@@ -96,7 +123,7 @@ async def read_note(args: ToolArguments) -> ReadNoteResult | ToolError:
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="search_notes",

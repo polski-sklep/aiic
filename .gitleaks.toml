@@ -1,8 +1,108 @@
+# gitleaks configuration.
+#
+# Why this file earns its place (handoff §8): `.env` was once tracked in the
+# VPS repo's local git history at commit 52d6fc1, and API keys have repeatedly
+# appeared in pasted terminal output and screenshots. Rotation of the
+# ANTHROPIC / OPENAI / BRAVE / NOTION keys is a standing, never-done item. A
+# scanner that runs on every push is the cheap half of that problem.
+#
+# Two scan modes, both wired into `make secrets` and the CI `secrets` job:
+#   git mode  — every commit in history. `.env` is gitignored so it is not
+#               reachable here; this is the authoritative check.
+#   --no-git  — the working tree as it sits on disk.
+#
+# Verified 24 Aug 2026 against gitleaks 8.30.1: the stock ruleset does NOT
+# detect Anthropic `sk-ant-...` keys, Brave `BSA...` keys or CoinGecko `CG-...`
+# keys. Those are exactly the credentials this project holds, so they are added
+# explicitly below. Do not delete them assuming `useDefault` covers them — it
+# was tested and it does not.
+#
+# The previous version of this file also allowlisted `^#` for generic-api-key,
+# which meant a key pasted into a comment was invisible to the scanner. Removed:
+# pasted-into-a-comment is precisely the exposure route §8 describes.
+
 [extend]
 useDefault = true
 
+# ---------------------------------------------------------------------------
+# Global allowlist
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Paths that legitimately contain secret-shaped text"
+paths = [
+    # The local, gitignored secrets file. It is SUPPOSED to contain real keys.
+    # It can never appear in git-mode results (it is not tracked); this entry
+    # only keeps the working-tree scan from reporting it on every run.
+    # `.env.example` is deliberately NOT allowlisted — it must stay clean.
+    '''^\.env$''',
+    '''^\.env\.(local|dev|prod|vps|backup)$''',
+    # `gitleaks --no-git --source .` walks .git/ as ordinary files otherwise.
+    '''^\.git/''',
+]
+
+# ---------------------------------------------------------------------------
+# Project-specific rules — the credentials this repo actually handles
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key (the primary credential for every agent call)"
+regex = '''sk-ant-(?:api|admin)[0-9]{2}-[A-Za-z0-9_\-]{80,120}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "openai-api-key-explicit"
+description = "OpenAI API key (embeddings)"
+regex = '''sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{40,}'''
+keywords = ["sk-proj-", "sk-svcacct-", "sk-admin-"]
+
+[[rules]]
+id = "brave-search-api-key"
+description = "Brave Search API subscription token (web_search tool)"
+regex = '''(?i)brave[_\-]?(?:search)?[_\-]?api[_\-]?key["'\s]*[:=]["'\s]*(BS[A-Za-z0-9_\-]{20,})'''
+secretGroup = 1
+keywords = ["brave"]
+
+[[rules]]
+id = "coingecko-api-key"
+description = "CoinGecko demo/pro API key"
+regex = '''\bCG-[A-Za-z0-9]{20,}\b'''
+keywords = ["CG-"]
+
+[[rules]]
+id = "notion-integration-token"
+description = "Notion internal integration token"
+regex = '''\b(?:secret_|ntn_)[A-Za-z0-9]{40,}\b'''
+keywords = ["secret_", "ntn_"]
+
+[[rules]]
+id = "aws-access-key-id-explicit"
+description = "AWS access key id"
+regex = '''\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b'''
+keywords = ["AKIA", "ASIA", "ABIA", "ACCA"]
+
+[[rules]]
+id = "postgres-password-assignment"
+description = "A literal value assigned to POSTGRES_PASSWORD outside .env"
+# CONTRACTS.md §4.5: this value is baked into the initialised Postgres volume,
+# so it must live in .env and nowhere else. An empty assignment (as in
+# .env.example) does not match; a `${...}` interpolation is allowlisted below.
+regex = '''POSTGRES_PASSWORD\s*[:=]\s*["']?([^\s"'${}][^\s"']{5,})'''
+secretGroup = 1
+keywords = ["POSTGRES_PASSWORD"]
+[rules.allowlist]
+# Match against the whole LINE, not just the captured secret. Compose's
+# `${POSTGRES_PASSWORD:?...}` guard names the variable twice, and the second
+# occurrence otherwise captures the `:?` / `:-` suffix as a "secret".
+regexTarget = "line"
+regexes = ['''\$\{POSTGRES_PASSWORD''']
+paths = ['''\.md$''', '''^docs/''']
+
+# ---------------------------------------------------------------------------
+# Tuning of a stock rule
+# ---------------------------------------------------------------------------
 [[rules]]
 id = "generic-api-key"
 [rules.allowlist]
-paths = ['''\.env\.example$''']
-regexes = ['''^#''']
+description = "Placeholder-only file; every value in it is empty by design"
+paths = ['''^\.env\.example$''']

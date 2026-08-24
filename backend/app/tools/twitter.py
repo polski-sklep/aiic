@@ -5,16 +5,26 @@ Minimal params for Free/Basic tier compatibility.
 """
 from __future__ import annotations
 import httpx
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 from app.llm import ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.tools.http_errors import (
+    BAD_REQUEST,
+    NOT_CONFIGURED,
+    RATE_LIMITED,
+    ToolFailure,
+    http_failure,
+    tool_failure,
+    transport_failure,
+)
+from app.utils.types import ToolArguments
 from app.config import get_settings
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 X_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
+
+SERVICE = "X API"
 
 
 class Tweet(TypedDict):
@@ -29,39 +39,75 @@ class TwitterSearchResult(TypedDict):
     tweets: list[Tweet]
 
 
-class ToolError(TypedDict, total=False):
-    error: str
-    details: str
+ToolError = ToolFailure
+
+
+def _coerce_max_results(raw: object, default: int = 10, maximum: int = 100) -> int:
+    if isinstance(raw, bool) or raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < 10:  # X API v2 rejects max_results below 10
+        return default
+    return min(value, maximum)
 
 
 async def search_twitter(args: ToolArguments) -> TwitterSearchResult | ToolError:
-    """Search recent tweets about a topic."""
-    query = str(args.get("query", "")).strip()
-    max_results = min(int(args.get("max_results", 10) or 10), 100)
+    """Search recent tweets about a topic.
+
+    QA-028: 401, 429 and 400 were handled and everything else was not, so a 403
+    — a suspended app or the wrong access tier, which is what this project
+    actually hits — escaped as an httpx exception while its neighbours returned
+    clean dicts. The tool was inconsistent with itself depending on which
+    failure occurred.
+    """
+    query = str(args.get("query", "") or "").strip()
+    max_results = _coerce_max_results(args.get("max_results"))
+
+    if not query:
+        return tool_failure(BAD_REQUEST, "No query was supplied.")
 
     settings = get_settings()
     token = getattr(settings, "x_bearer_token", "")
     if not token:
-        return {"error": "X_BEARER_TOKEN not configured. Add it to .env and restart."}
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            X_SEARCH_URL,
-            params={
-                "query": query,
-                "max_results": max_results,
-            },
-            headers={"Authorization": "Bearer " + token},
+        return tool_failure(
+            NOT_CONFIGURED, "X_BEARER_TOKEN not configured. Add it to .env and restart."
         )
 
-        if resp.status_code == 401:
-            return {"error": "X API authentication failed. Check X_BEARER_TOKEN."}
-        if resp.status_code == 429:
-            return {"error": "X API rate limit exceeded. Try again later."}
-        if resp.status_code == 400:
-            return {"error": "X API rejected query. Try simpler search terms.", "details": resp.text}
-        resp.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                X_SEARCH_URL,
+                params={
+                    "query": query,
+                    "max_results": max_results,
+                },
+                headers={"Authorization": "Bearer " + token},
+            )
+    except httpx.HTTPError as exc:
+        return transport_failure(SERVICE, exc)
+
+    if resp.status_code == 401:
+        return tool_failure(
+            NOT_CONFIGURED, f"{SERVICE} authentication failed. Check X_BEARER_TOKEN."
+        )
+    if resp.status_code == 429:
+        return tool_failure(RATE_LIMITED, f"{SERVICE} rate limit exceeded. Try again later.")
+    if resp.status_code == 400:
+        return tool_failure(
+            BAD_REQUEST,
+            f"{SERVICE} rejected the query. Try simpler search terms.",
+            details=resp.text,
+        )
+    if resp.status_code != 200:
+        return http_failure(SERVICE, resp.status_code)
+
+    try:
         data = cast(dict[str, object], resp.json())
+    except ValueError as exc:
+        return transport_failure(SERVICE, exc)
 
     tweets: list[Tweet] = []
     for tweet in cast(list[dict[str, object]], data.get("data", [])):
@@ -81,7 +127,7 @@ async def search_twitter(args: ToolArguments) -> TwitterSearchResult | ToolError
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="search_twitter",

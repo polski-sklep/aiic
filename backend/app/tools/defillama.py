@@ -1,19 +1,27 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 import httpx
 
 from app.llm import JSONValue, SourceReference, ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.tools.http_errors import (
+    BAD_REQUEST,
+    NOT_FOUND,
+    NO_DATA,
+    ToolFailure,
+    http_failure,
+    tool_failure,
+    transport_failure,
+)
+from app.utils.types import ToolArguments
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 BASE_URL = "https://api.llama.fi"
 
+SERVICE = "DeFiLlama"
 
-class ToolError(TypedDict, total=False):
-    error: str
+ToolError = ToolFailure
 
 
 class TVLPoint(TypedDict):
@@ -59,14 +67,47 @@ def _source(label: str, url: str, kind: str) -> SourceReference:
     )
 
 
-async def get_tvl(args: ToolArguments) -> ProtocolTvlResult | ToolError:
-    """Fetch current TVL for a protocol."""
-    protocol = str(args.get("protocol", "")).lower().strip()
+def _protocol_arg(raw: object) -> str:
+    if raw is None:
+        return ""
+    return str(raw).lower().strip()
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{BASE_URL}/protocol/{protocol}")
-        resp.raise_for_status()
+
+async def get_tvl(args: ToolArguments) -> ProtocolTvlResult | ToolError:
+    """Fetch current TVL for a protocol.
+
+    QA-029: this was the primary DeFi metric tool and the only one of the eleven
+    with no status handling at all. A 404, a 429 and a DeFiLlama outage all left
+    as httpx exceptions and reached the agent as the same generic registry
+    string. "This protocol is not on DeFiLlama" is a finding; "DeFiLlama is
+    down" is a data gap; an agent that cannot separate them will assert a
+    protocol has no TVL because the API was unavailable.
+    """
+    protocol = _protocol_arg(args.get("protocol"))
+    if not protocol:
+        return tool_failure(
+            BAD_REQUEST, "No protocol was supplied. Pass a DeFiLlama slug (e.g. 'aave')."
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{BASE_URL}/protocol/{protocol}")
+    except httpx.HTTPError as exc:
+        return transport_failure(SERVICE, exc)
+
+    if resp.status_code == 404:
+        return tool_failure(
+            NOT_FOUND,
+            f"'{protocol}' is not listed on {SERVICE}. Check the slug before concluding "
+            f"the protocol has no TVL.",
+        )
+    if resp.status_code != 200:
+        return http_failure(SERVICE, resp.status_code)
+
+    try:
         data = cast(dict[str, JSONValue], resp.json())
+    except ValueError as exc:
+        return transport_failure(SERVICE, exc)
 
     current_tvl = cast(dict[str, JSONValue], data.get("currentChainTvls", {}))
     tvl_history = cast(list[dict[str, JSONValue]], data.get("tvl", []))
@@ -105,17 +146,30 @@ async def get_tvl(args: ToolArguments) -> ProtocolTvlResult | ToolError:
 
 async def get_protocol_fees(args: ToolArguments) -> ProtocolFeesResult | ToolError:
     """Fetch fee and revenue data for a protocol."""
-    protocol = str(args.get("protocol", "")).lower().strip()
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{BASE_URL}/summary/fees/{protocol}",
-            params={"dataType": "dailyFees"},
+    protocol = _protocol_arg(args.get("protocol"))
+    if not protocol:
+        return tool_failure(
+            BAD_REQUEST, "No protocol was supplied. Pass a DeFiLlama slug (e.g. 'aave')."
         )
-        if resp.status_code == 404:
-            return {"error": f"No fee data available for '{protocol}'"}
-        resp.raise_for_status()
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{BASE_URL}/summary/fees/{protocol}",
+                params={"dataType": "dailyFees"},
+            )
+    except httpx.HTTPError as exc:
+        return transport_failure(SERVICE, exc)
+
+    if resp.status_code == 404:
+        return tool_failure(NO_DATA, f"No fee data available for '{protocol}'")
+    if resp.status_code != 200:
+        return http_failure(SERVICE, resp.status_code)
+
+    try:
         data = cast(dict[str, JSONValue], resp.json())
+    except ValueError as exc:
+        return transport_failure(SERVICE, exc)
 
     breakdown = data.get("totalDataChartBreakdown", [])
     last_breakdown = cast(dict[str, JSONValue], breakdown[-1]) if isinstance(breakdown, list) and breakdown else {}
@@ -138,7 +192,7 @@ async def get_protocol_fees(args: ToolArguments) -> ProtocolFeesResult | ToolErr
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="get_tvl",

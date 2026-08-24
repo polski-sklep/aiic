@@ -1,0 +1,107 @@
+# Secret scanning and dependency audit.
+#
+# Split from ci.yml because these two need different triggers and different
+# permissions, and because the secret scan's scope rules are subtle enough to
+# deserve their own file.
+#
+# Why this earns its place (handoff §8): `.env` was once tracked in the VPS
+# repo's local git history at commit 52d6fc1, and keys have appeared in pasted
+# terminal output and screenshots across sessions. Rotation of the ANTHROPIC /
+# OPENAI / BRAVE / NOTION keys remains a standing, never-done item.
+#
+# Verified against gitleaks 8.30.1 that the stock ruleset does NOT match
+# Anthropic `sk-ant-...`, Brave `BSA...` or CoinGecko `CG-...` keys, which are
+# exactly the credentials this project holds. .gitleaks.toml adds them.
+
+name: Security
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published advisory against an unchanged pin is noticed
+    # without waiting for someone to push.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the incremental scan below needs the base commit present.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          version=8.30.1
+          curl -sSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # BLOCKING. Scans only the commits this push/PR actually introduces.
+      #
+      # A full-history scan can never go green here: `.env.example` carried a
+      # weak default password from the first commit until it was fixed, and
+      # history is immutable. Scanning the new range is what actually prevents
+      # a NEW leak, which is the point.
+      - name: New commits only
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          # All-zero sha means a new branch or the first push; fall back to HEAD.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "No usable base commit; scanning HEAD only."
+            gitleaks detect --config .gitleaks.toml --redact -v --log-opts="-1 $head"
+          else
+            echo "Scanning $base..$head"
+            gitleaks detect --config .gitleaks.toml --redact -v --log-opts="$base..$head"
+          fi
+
+      # BLOCKING. The tree as it stands, regardless of when a secret was
+      # introduced. `.env` is allowlisted by path (it is gitignored and is
+      # supposed to hold real keys); `.env.example` deliberately is not.
+      - name: Working tree
+        run: gitleaks detect --config .gitleaks.toml --redact -v --no-git --source .
+
+      # ADVISORY. Full history, for visibility only. Findings here are known
+      # and fixed; see docs/operations.md.
+      - name: Full history (advisory)
+        continue-on-error: true
+        run: gitleaks detect --config .gitleaks.toml --redact -v || true
+
+  dependencies:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the dev image
+        run: docker build --target dev -t aiic-dev backend
+
+      # BLOCKING, against the accepted-vulnerability ledger in the Makefile.
+      # Dependabot only reads the manifest; pip-audit resolves the full tree
+      # and found 12 advisories in transitive deps that Dependabot cannot see.
+      # The ledger holds exactly the 7 starlette advisories that cannot be
+      # cleared without bumping fastapi, each with a reachability argument in
+      # docs/reviews/dependency-audit.md. Anything NEW fails this job.
+      - name: Audit against the ledger
+        run: make audit DEV_IMAGE=aiic-dev
+
+      - name: Ledger contents, for the record
+        if: always()
+        run: make audit-all DEV_IMAGE=aiic-dev

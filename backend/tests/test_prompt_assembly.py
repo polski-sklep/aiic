@@ -67,28 +67,63 @@ class PriorOutputsSectionTest(unittest.TestCase):
         social agents silently (both call sites swallow the miss)."""
         self.assertGreater(len(load_trusted_accounts_section()), 100)
 
-    @unittest.expectedFailure
-    def test_QA_043_the_limit_argument_must_bound_string_fields(self):
-        """QA-043 (MED): ``limit`` is silently a no-op for strings.
+    def test_QA_043_every_rendered_field_is_bounded(self):
+        """QA-043 (was MED, now bounded): a hard per-field ceiling.
 
-        _stringify_prompt_value excludes str from its Sequence branch and falls
-        through to ``str(value)`` with no truncation. Every caller that passes a
-        limit for a string field believes it is bounded and is not:
+        Pass 1 asserted that ``limit`` should bound string fields, because
+        _stringify_prompt_value excluded str from its Sequence branch and fell
+        through to an untruncated ``str(value)``. Callers pass
+        ``("summary", "Summary", 3)`` (synthesis_agents.py, risk_officer.py) and
+        that read as a bound when it was a no-op, so up to eight data agents'
+        full summaries landed in the veto-holding agent's prompt.
 
-            synthesis_agents.py:38  ("summary", "Summary", 3)
-            risk_officer.py:38      ("summary", "Summary", 3)
+        The fix implemented was MAX_PROMPT_FIELD_CHARS, a 1000-char ceiling on
+        every rendered field regardless of type. That closes the stated harm --
+        prompt size is no longer unbounded by agent verbosity.
 
-        Those read as "3 items" but render the full summary for up to eight data
-        agents into the Risk Officer's and Maturation Scorer's prompts. Prompt
-        size is unbounded by agent verbosity, and the veto-holding agent is the
-        one carrying the load.
+        This assertion is deliberately *not* the one pass 1 wrote. Making that
+        one pass would mean reinterpreting ``limit`` from items to characters at
+        both call sites; doing it at one and not the other would truncate every
+        data agent's summary to three characters in the Risk Officer's prompt,
+        strictly worse than the original defect. The residual -- that ``limit``
+        still silently means nothing for a string -- is recorded as QA-043b in
+        docs/reviews/qa-findings.md and needs a cross-owner decision, not a
+        test that forces half of it.
         """
         out = format_prior_outputs_section(
-            {"a": {"summary": "x" * 500}}, "H", (("summary", "Summary", 3),)
+            {"a": {"summary": "x" * 5000}}, "H", (("summary", "Summary", 3),)
         )
-        self.assertLess(len(out), 100)
+        self.assertLessEqual(len(out), 1100)
+        self.assertTrue(out.rstrip().endswith("..."))
 
-    @unittest.expectedFailure
+    def test_QA_043_the_ceiling_applies_to_lists_and_mappings_too(self):
+        """A list of long items cannot evade the ceiling by being a list."""
+        long_list = format_prior_outputs_section(
+            {"a": {"risks": ["y" * 400] * 10}}, "H", (("risks", "Risks", 5),)
+        )
+        long_map = format_prior_outputs_section(
+            {"a": {"dq": {"k": "z" * 5000}}}, "H", (("dq", "DQ", None),)
+        )
+        self.assertLessEqual(len(long_list), 1100)
+        self.assertLessEqual(len(long_map), 1100)
+
+    def test_QA_043b_limit_still_counts_items_not_characters(self):
+        """Pins the residual so the semantics cannot drift silently.
+
+        ``limit`` bounds list items and does nothing to a string. That is the
+        contract as implemented; if it ever changes, both call sites have to
+        change together and this test is the tripwire.
+        """
+        listed = format_prior_outputs_section(
+            {"a": {"risks": ["r1", "r2", "r3", "r4"]}}, "H", (("risks", "Risks", 2),)
+        )
+        self.assertEqual(listed, "H:\n[a]\n  Risks: r1; r2")
+
+        stringy = format_prior_outputs_section(
+            {"a": {"summary": "abcdefghij"}}, "H", (("summary", "Summary", 2),)
+        )
+        self.assertEqual(stringy, "H:\n[a]\n  Summary: abcdefghij")
+
     def test_QA_044_an_agent_with_no_renderable_fields_must_still_be_visible(self):
         """QA-044 (LOW/MED): a failed agent vanishes rather than being reported.
 
@@ -174,7 +209,6 @@ class TechnicalAnalystExclusionTest(unittest.TestCase):
         )
         self.assertEqual(score, 80.0)
 
-    @unittest.expectedFailure
     def test_QA_045_technical_analyst_score_must_not_reach_the_portfolio_manager(self):
         """QA-045 (HIGH): the exclusion is enforced in the arithmetic only.
 
@@ -206,6 +240,48 @@ class TechnicalAnalystExclusionTest(unittest.TestCase):
         )
         scores_section = prompt.split("PRIOR AGENT SCORES:", 1)[1].split("\n\n", 1)[0]
         self.assertNotIn("technical_analyst", scores_section)
+
+    def test_the_conviction_weight_roster_is_what_the_docs_say(self):
+        """Pins who actually carries arithmetic conviction weight.
+
+        The prompt-layer fix is correct and important -- a Technical Analyst
+        score was reaching a second conviction-forming prompt. But the note on
+        NON_CONVICTION_SCORE_AGENTS in prompt_utils.py claims the Devil's
+        Advocate "carries conviction weight" alongside the Portfolio Manager.
+        It does not: devils_advocate is absent from _calc_score's weights, so it
+        contributes nothing to the arithmetic. It is also absent from
+        exclude_from_scores, so its score is surfaced in the per-agent scores --
+        which is a real reason to withhold it from peer prompts, but a different
+        one from the reason stated.
+
+        Recorded as QA-046 (documentation, not behaviour). This test is the
+        check that keeps either claim from drifting.
+        """
+        from app.agents.orchestrator import Orchestrator
+
+        orchestrator = Orchestrator()
+        weighted = self._result("devils_advocate", 50)
+        alone = orchestrator._calc_score({"tokenomics_analyst": self._result("tokenomics_analyst", 80)})
+        with_da = orchestrator._calc_score(
+            {"tokenomics_analyst": self._result("tokenomics_analyst", 80), "devils_advocate": weighted}
+        )
+        self.assertEqual(alone, 80.0)
+        self.assertEqual(with_da, alone, "devils_advocate moved the weighted score")
+
+    def test_the_portfolio_manager_does_carry_conviction_weight(self):
+        """The other half of the same claim, which is true and load-bearing:
+        withholding a score from this prompt matters *because* this reader votes."""
+        from app.agents.orchestrator import Orchestrator
+
+        orchestrator = Orchestrator()
+        alone = orchestrator._calc_score({"tokenomics_analyst": self._result("tokenomics_analyst", 80)})
+        with_pm = orchestrator._calc_score(
+            {
+                "tokenomics_analyst": self._result("tokenomics_analyst", 80),
+                "portfolio_manager": self._result("portfolio_manager", 20),
+            }
+        )
+        self.assertNotEqual(with_pm, alone)
 
     def test_technical_entry_context_is_still_delivered_separately(self):
         """The channel that is supposed to exist must keep existing -- fixing

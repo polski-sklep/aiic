@@ -9,17 +9,13 @@
 - X
 - Market maps and category research
 - On-chain dashboards where relevant
-- Inputs from Knowledge Agent
-- Inputs from Economics
-- Inputs from On-Chain Analyst
 
 ## Preferred Order
 1. Official project materials
-2. Knowledge Agent context pack
-3. Public web sources
-4. Market and category research
-5. On-chain context where relevant
-6. X
+2. Public web sources
+3. Market and category research
+4. On-chain context where relevant
+5. X
 
 ## Tool Usage Rules
 - Compare function before branding

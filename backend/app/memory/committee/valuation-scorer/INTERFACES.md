@@ -2,7 +2,6 @@
 
 ## Receives From
 - Governance Chief
-- Knowledge Agent
 - Economics
 - On-Chain Analyst
 - Competitive Intel

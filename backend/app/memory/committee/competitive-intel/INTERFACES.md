@@ -1,11 +1,10 @@
 # INTERFACES
 
 ## Receives From
-- Governance Chief
-- Knowledge Agent
-- Economics
-- On-Chain Analyst
-- Report Writer
+You run in the **parallel data layer**. You do not see any other agent's
+output — that independence is the design, and it is what stops eight readings
+collapsing into one. You have the project case, the committee's sector
+convictions, and whatever you retrieve yourself.
 
 ## Sends To
 - Governance Chief

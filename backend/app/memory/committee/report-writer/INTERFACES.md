@@ -2,7 +2,6 @@
 
 ## Receives From
 - Governance Chief
-- Knowledge Agent
 - Risk Officer
 - Economics
 - Gov Analyst

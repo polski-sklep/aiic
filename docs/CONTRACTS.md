@@ -36,29 +36,36 @@ owner fix it.
 These were checked against the live runtime on 24 Aug 2026. Several **contradict
 the handoff brief** — the runtime wins.
 
-### 2.1 Persona slug map is already definitive
+### 2.1 Persona map — RESOLVED, and it hid two defects
 
 `backend/app/memory/agent_personas.py::AGENT_FOLDERS` is the authoritative
-class→folder map. §2.1 of the handoff is resolved. The map:
+class→folder map. Handoff §2.1 is resolved. Both defects it concealed are fixed
+on `integration` (merge of `agent/personas`):
 
-```
-tokenomics_analyst  -> economics          governance_analyst -> gov-analyst
-technical_analyst   -> technical-analyst  onchain_analyst    -> onchain-analyst
-competitive_intel   -> competitive-intel  field_intel        -> fed-intelligence
-legal_regulatory    -> legal-analyst      risk_officer       -> risk-officer
-maturation_scorer   -> valuation-scorer   devils_advocate    -> devils-advocate
-portfolio_manager   -> portfolio-manager  report_writer      -> report-writer
-ray_dalio           -> ray-judge          committee_chair    -> governance-chief
-```
+- `tech_infra_analyst` was **absent from the map**. One of two agents carrying
+  the joint-highest score weight (0.15) ran with no persona at all —
+  `load_agent_persona` returned `""` and `BaseAgent` fell back to its
+  one-paragraph `role_description`. It now has a five-file persona.
+- `knowledge-agent/` was an orphan mapped to no class. Archived under
+  `backend/app/memory/archive/`, not deleted — it is the ready-made spec if the
+  retrieval layer ever gets a seat.
 
-**Two defects follow from it:**
+Current state, verified in the container: **15 agents mapped, 15 folders, no
+`MISSING`, one-to-one.**
 
-- `tech_infra_analyst` is **absent from the map**. It is one of two agents
-  carrying the joint-highest score weight (0.15) and it runs with **no persona**
-  — `load_agent_persona` returns `""` and `BaseAgent` silently falls back to
-  `role_description`. Owned by `agent/personas`.
-- `knowledge-agent/` is an **orphan folder** — 6 files, mapped to no class,
-  loaded by nothing.
+### 2.1a Data-agent independence was being contradicted at runtime
+
+`docs/CONTRACTS.md` §4.2 and the handoff both state the eight data agents must
+not see each other's output — that diversity is the design. **Six of the eight
+personas were telling the agents the opposite**, listing sibling data agents
+under "Receives From" and offering their output as available inputs. This was
+live on every paid call.
+
+Fixed. It bears directly on the concordance result in handoff §10 (80%
+recommendation match between eight specialists and one generalist): personas
+that instruct agents to converge are a plausible partial cause of measured
+convergence. The experiment's conclusion should not be treated as settled while
+that contamination is unaccounted for.
 
 ### 2.2 pgvector is NOT inert — the handoff §5 is wrong
 

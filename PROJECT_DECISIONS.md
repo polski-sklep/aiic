@@ -245,3 +245,57 @@ Three contradictory lists reaching one agent is worse than any single list.
 line naming the decision that drives it, for Jacob's sign-off. Anything that is
 genuinely a new policy question — the old `>$10M TVL` size test being the likely
 candidate — is flagged rather than decided.
+
+---
+
+## D12 — Handoff §3.1 is wrong about its own headline case
+
+**Established by:** `agent/retrospective`, from the Aave `adjudication_trace`
+recovered out of `agent_outputs` — the one project in the corpus with Postgres
+rows as well as a Notion page.
+
+§3.1 says Aave "scored 77.2 with chair confidence high, and the chair returned
+PASS — the weighted score and the chair's judgment disagreed by a full band and
+the score lost."
+
+**The Chair never received 77.2.** It read the Report Writer's **73.5** — a
+WATCH-band number — and recorded a full trace: `threshold_crossed`,
+`override_reasoning`, fatal versus non-fatal objections, and
+`report_writer_recommendation: WATCH`. The weighted 77.2 was computed nine lines
+later and written to the ledger.
+
+So the two numbers never met. The score did not lose an argument; there was no
+argument.
+
+**Why this changes what should be built:** ADR 0002's Option B — replace
+cardinal scoring with ordinal conviction tiers — is a remedy for a judgment
+agent overriding a number it disliked. That is not this system's defect. The
+defects are that the Chair adjudicates on a *different* number from the one the
+ledger records, and that its reasoning is discarded: `_notion_write` saves agent
+summaries only, and four of six records have no `agent_outputs` at all.
+
+**Consequence:** Option A's premise strengthens and Option B's weakens. D6's
+split stands, but `agent/core` must record **both** numbers, not just the
+weighted one against the decision. Persisting the Chair's decision object is
+promoted from nice-to-have to a prerequisite for calibration meaning anything.
+
+---
+
+## D13 — §6.2's bear-market assumption does not hold
+
+§6.2 warns that "in a bear market every PASS/WATCH looks correct on price".
+Measured over the actual window, **BTC rose 21.4%**. It was not a bear market,
+so raw return flatters nothing and alpha is doing real work rather than
+rescuing a foregone conclusion.
+
+A second, sharper caveat came out of the measurement and is Jacob's to weigh:
+**two of six verdicts change sign across the six days from 18 to 24 August**,
+when the market repriced broadly. Ethena grades as a clean HIT on 18 August and
+a PARTIAL on 24 August on identical reasoning. Only Aave and Plasma are
+sign-stable at every checkpoint.
+
+**Consequence:** at n=6 and 67 days, the *direction* of individual verdicts is
+not robust to the observation date. The qualitative findings — which classes of
+variable the committee notices and which it misses — are robust, because they
+rest on what was written rather than on where the price landed. Weight the
+findings, not the scorecard.

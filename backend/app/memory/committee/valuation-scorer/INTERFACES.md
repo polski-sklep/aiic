@@ -16,7 +16,7 @@
 
 ## Required Inputs
 - Current case definition
-- Context pack
+- Prior knowledge you retrieve via search_notes
 - Economic assessment
 - Competitive peer set
 - Supply and float context where relevant

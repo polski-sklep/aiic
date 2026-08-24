@@ -48,11 +48,25 @@ async def generate_embedding(text: str) -> list[float]:
     raise RuntimeError("OpenAI API key required for embeddings (text-embedding-3-small)")
 
 
+SEARCHABLE_TABLES = frozenset({"knowledge_chunks", "learnings", "transcripts"})
+
+# Empirically derived against the live 62-chunk corpus on 24 Aug 2026.
+# text-embedding-3-small yields much lower absolute cosine similarities than the
+# previous 0.7 default assumed: across 14 realistic agent queries x 5 results the
+# highest similarity observed anywhere was 0.6317, so threshold=0.7 returned ZERO
+# rows for EVERY query. 0.30 separates signal from noise cleanly -- queries for
+# projects absent from the corpus ("Lido" 0.1915, "EigenLayer" 0.2131) fall below
+# it and correctly return nothing, while every in-corpus query keeps its true
+# hits (weakest true positive 0.3006).
+# Full measurement: docs/reviews/retrieval-evaluation.md
+DEFAULT_SIMILARITY_THRESHOLD = 0.30
+
+
 async def semantic_search(
     query: str,
     table: Literal["knowledge_chunks", "learnings", "transcripts"] = "knowledge_chunks",
     limit: int = 5,
-    threshold: float = 0.7,
+    threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> list[SemanticSearchResult]:
     """Search for semantically similar content in pgvector.
 
@@ -60,10 +74,16 @@ async def semantic_search(
         query: Search query text
         table: Table to search (knowledge_chunks, learnings, transcripts)
         limit: Max results
-        threshold: Minimum cosine similarity (0-1)
+        threshold: Minimum cosine similarity (0-1). See
+            DEFAULT_SIMILARITY_THRESHOLD for why the default is 0.30, not 0.7.
     """
     from sqlalchemy import text as sql_text
     from app.database import async_session
+
+    # `table` is interpolated into the SQL below, so it must never be
+    # caller-controlled text. The Literal annotation is not enforced at runtime.
+    if table not in SEARCHABLE_TABLES:
+        raise ValueError(f"Unknown table for semantic search: {table!r}")
 
     embedding = await generate_embedding(query)
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"

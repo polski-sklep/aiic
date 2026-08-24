@@ -1,0 +1,51 @@
+                  id                  |              project_id              |  status   | triggered_by |          created_at           | errored 
+--------------------------------------+--------------------------------------+-----------+--------------+-------------------------------+---------
+ 75cf1b3d-074c-4088-b0f3-d0f4cccd59a3 | 79d40ba5-7a71-4be8-9e91-d48bd2fa9929 | completed | api          | 2026-04-10 09:52:08.163189+00 | f
+ c1479a94-f5cc-4062-b518-0cc06be42d07 | e214c865-c398-4dc7-920a-b4b5de45f81d | completed | api          | 2026-04-11 17:52:22.601777+00 | f
+ d5571fd9-6a98-4a40-b745-ad4c35c22dca | 3bc6c39c-5db7-4d86-9958-aebe6b94c03e | completed | api          | 2026-04-12 21:20:46.045537+00 | f
+ 5e6e4f2d-7cff-4046-ac35-be01b4c8b03a | fc29628b-e44a-4701-8c3f-68aee64057a5 | completed | api          | 2026-04-14 07:56:11.031225+00 | f
+ b70d9d7f-3b9b-45ae-8be1-ddbf4ca0d168 | fc29628b-e44a-4701-8c3f-68aee64057a5 | completed | api          | 2026-04-14 12:48:57.59584+00  | f
+ 5a57a961-1f4c-44a4-af07-2410e02b9051 | e74fcdb4-329a-476b-b38e-0358aa92fde6 | completed | api          | 2026-04-15 11:17:45.673521+00 | f
+ 8bcb083b-49f9-4868-9827-31f4a6229f2d | 5c0a4093-9a52-493f-ab5e-62d6d1c51031 | completed | api          | 2026-04-15 16:05:17.343996+00 | f
+ 07035d61-1492-4b32-9dc1-dd55f1521402 | 13b78214-496d-40af-9705-c486f4672d48 | completed | api          | 2026-04-16 10:13:36.653457+00 | f
+ b028881a-71c0-4653-88b4-fd09e95fea9f | eb015176-dd3c-4ac9-a34f-665cfd1919c0 | completed | api          | 2026-04-16 20:24:35.0354+00   | f
+ b22be475-3bdf-4dbd-aa9f-7816745f3a2a | 79d40ba5-7a71-4be8-9e91-d48bd2fa9929 | completed | api          | 2026-06-01 06:54:22.170339+00 | f
+ 5b566fc1-a392-40bc-a1e8-a8d61d51d214 | 79d40ba5-7a71-4be8-9e91-d48bd2fa9929 | completed | api          | 2026-06-01 07:08:47.732185+00 | f
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | e214c865-c398-4dc7-920a-b4b5de45f81d | completed | api          | 2026-06-11 13:28:32.176001+00 | f
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | e214c865-c398-4dc7-920a-b4b5de45f81d | completed | api          | 2026-06-11 13:37:21.228714+00 | f
+(13 rows)
+
+            evaluation_id             |     agent_name     | len  
+--------------------------------------+--------------------+------
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | committee_chair    |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | competitive_intel  |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | devils_advocate    |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | field_intel        |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | governance_analyst |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | legal_regulatory   |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | maturation_scorer  |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | onchain_analyst    |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | portfolio_manager  |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | ray_dalio          |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | report_writer      |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | risk_officer       |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | tech_infra_analyst |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | technical_analyst  |  323
+ 0f48a034-e7a6-45c3-83cb-9a4e1a416692 | tokenomics_analyst |  323
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | committee_chair    | 3626
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | competitive_intel  | 2395
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | devils_advocate    | 8941
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | field_intel        | 2164
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | governance_analyst | 2792
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | legal_regulatory   | 2288
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | maturation_scorer  | 2225
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | onchain_analyst    | 2629
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | portfolio_manager  | 2292
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | ray_dalio          | 3059
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | report_writer      | 8288
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | risk_officer       | 2508
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | tech_infra_analyst | 2429
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | technical_analyst  | 2940
+ 1a94e47d-68bf-4fdd-a45a-49fb790fbecc | tokenomics_analyst | 3096
+(30 rows)
+

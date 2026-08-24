@@ -104,6 +104,27 @@ deduplicated risks, written by `orchestrator._notion_write`. Verified page ids:
 | Morpho | `3830a58c-96ec-8162-8c35-f6cd3cb04b6a` |
 | Pendle | `3830a58c-96ec-8170-a0dc-cfd96f5314e7` |
 
+### 2.7 A CoinGecko 429 is indistinguishable from missing data
+
+Verified by direct probe on 24 Aug 2026. The free tier returns **HTTP 200** with
+no `market_data` key when rate-limited:
+
+```json
+{"status":{"error_code":429,"error_message":"You've exceeded the Rate Limit. ..."}}
+```
+
+Code that branches on `if "market_data" not in data` will record a rate limit as
+"the coin did not exist on that date". Any consumer must check `status.error_code`
+**before** checking `market_data`, and must distinguish three outcomes — price
+found, no data for that date, fetch failed — never collapsing the last two.
+
+The limit is tighter than expected: 429 on the **fourth** call at 8-second
+spacing. Sleep 15–20s and cache responses to disk.
+
+The historical endpoint itself works keyless and is confirmed good:
+`GET /coins/{id}/history?date=DD-MM-YYYY&localization=false` →
+`market_data.current_price.usd`.
+
 ### 2.6 Live calibration ledger (do not mutate without orchestrator approval)
 
 | Project | id | Rec | Score | Conf | Entry USD | BTC entry | Date |

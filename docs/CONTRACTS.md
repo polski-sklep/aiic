@@ -25,6 +25,8 @@ owner fix it.
 | `agent/security` | `docs/reviews/security-review.md` — report only, no code fixes |
 | `agent/qa` | `backend/tests/**` **except** `test_calibration.py` |
 | `agent/ui-report` | `backend/app/tpl.html`, `backend/app/api/reports.py`, `backend/app/static/**` |
+| `agent/retrieval` | `backend/app/knowledge/__init__.py`, `backend/app/api/knowledge.py`, `backend/app/tools/semantic.py`, `docs/reviews/retrieval-evaluation.md` |
+| `agent/core` | `backend/app/main.py`, `backend/app/agents/orchestrator.py`, `backend/app/agents/chair.py`, `backend/app/utils/types.py`, `backend/app/api/memory.py`, `backend/migrations/0003_*.sql` |
 | orchestrator only | `README.md`, `AGENTS.md`, `PROJECT_DECISIONS.md`, `docs/CONTRACTS.md`, `AIIC_HANDOFF.md`, `.gitignore` |
 
 ---
@@ -102,6 +104,27 @@ deduplicated risks, written by `orchestrator._notion_write`. Verified page ids:
 | Ethena | `3830a58c-96ec-8116-80ba-cb7ee0933c71` |
 | Morpho | `3830a58c-96ec-8162-8c35-f6cd3cb04b6a` |
 | Pendle | `3830a58c-96ec-8170-a0dc-cfd96f5314e7` |
+
+### 2.7 A CoinGecko 429 is indistinguishable from missing data
+
+Verified by direct probe on 24 Aug 2026. The free tier returns **HTTP 200** with
+no `market_data` key when rate-limited:
+
+```json
+{"status":{"error_code":429,"error_message":"You've exceeded the Rate Limit. ..."}}
+```
+
+Code that branches on `if "market_data" not in data` will record a rate limit as
+"the coin did not exist on that date". Any consumer must check `status.error_code`
+**before** checking `market_data`, and must distinguish three outcomes — price
+found, no data for that date, fetch failed — never collapsing the last two.
+
+The limit is tighter than expected: 429 on the **fourth** call at 8-second
+spacing. Sleep 15–20s and cache responses to disk.
+
+The historical endpoint itself works keyless and is confirmed good:
+`GET /coins/{id}/history?date=DD-MM-YYYY&localization=false` →
+`market_data.current_price.usd`.
 
 ### 2.6 Live calibration ledger (do not mutate without orchestrator approval)
 

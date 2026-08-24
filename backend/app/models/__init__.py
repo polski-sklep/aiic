@@ -159,4 +159,7 @@ class CalibrationRecord(Base):
     alpha_vs_btc_30d_pct = Column(Numeric(10, 2))
     alpha_vs_btc_90d_pct = Column(Numeric(10, 2))
     alpha_vs_btc_180d_pct = Column(Numeric(10, 2))
+    # Added by backend/migrations/0002_calibration_outcome_notes.sql.
+    # CONTRACTS §3.2: a backfilled checkpoint must be marked as such here.
+    outcome_notes = Column(Text)
     created_at = Column(DateTime(timezone=True), default=utcnow)

@@ -264,8 +264,21 @@ WATCH-band number — and recorded a full trace: `threshold_crossed`,
 `report_writer_recommendation: WATCH`. The weighted 77.2 was computed nine lines
 later and written to the ledger.
 
-So the two numbers never met. The score did not lose an argument; there was no
-argument.
+So the two numbers never met.
+
+**Correction, from `agent/core`'s instrumentation.** My first reading of this —
+that there was no contradiction at all, only divergence — was too strong. 73.5
+sits in the **WATCH** band and the Chair returned **PASS**, which is a one-band
+departure, and `report_writer_recommendation: WATCH` in the trace confirms the
+Chair knew it was departing. So Aave was **both** divergence and contradiction.
+
+What the recovered trace actually overturns is the **magnitude**: the ledger's
+view puts the decision two bands from the score, the Chair's own view puts it
+one. Half the apparent override was two estimators disagreeing with each other,
+not a judgment agent overruling a number.
+
+All three values — weighted score, chair-visible score, decision — are now
+recorded separately, so neither diagnosis can be reached by accident again.
 
 **Why this changes what should be built:** ADR 0002's Option B — replace
 cardinal scoring with ordinal conviction tiers — is a remedy for a judgment

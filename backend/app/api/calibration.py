@@ -119,6 +119,14 @@ async def pending_checkpoints():
                        price_30d, price_90d, price_180d
                 FROM calibration_records
                 WHERE entry_captured_at IS NOT NULL
+                  -- A failed committee run has no call to calibrate, and an
+                  -- entry price is what every return is computed against.
+                  -- Without these two filters such rows report as permanently
+                  -- overdue: nothing will ever fill them, so "pending" could
+                  -- never reach zero and real checkpoints would sit alongside
+                  -- standing false positives.
+                  AND recommendation <> 'INSUFFICIENT_DATA'
+                  AND entry_price_usd IS NOT NULL
                 ORDER BY entry_captured_at ASC
                 """
             )

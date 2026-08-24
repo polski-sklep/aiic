@@ -577,7 +577,7 @@ async def plan_record(
 # --- rendering ---------------------------------------------------------------
 
 
-def render_plan(plan: Plan, out=sys.stdout) -> None:
+def render_plan(plan: Plan, out=sys.stdout, commit: bool = False) -> None:
     r = plan.record
     entry_day = _entry_day(r)
     entry_str = entry_day.isoformat() if entry_day else "unknown"
@@ -597,7 +597,8 @@ def render_plan(plan: Plan, out=sys.stdout) -> None:
     if plan.checkpoint:
         c = plan.checkpoint
         cols = HORIZON_COLUMNS[c["horizon_days"]]
-        print(f"  WOULD WRITE ({c['horizon_days']}d checkpoint, "
+        verb = "WRITING" if commit else "WOULD WRITE"
+        print(f"  {verb} ({c['horizon_days']}d checkpoint, "
               f"observation date {c['target_date'].isoformat()}):", file=out)
         print(f"      {cols['price']:<24} = {c['price']}", file=out)
         print(f"      {cols['btc_price']:<24} = {c['btc_price']}", file=out)
@@ -611,7 +612,8 @@ def render_plan(plan: Plan, out=sys.stdout) -> None:
 
     if plan.mark:
         m = plan.mark
-        print(f"  WOULD APPEND ({m['elapsed_days']}-day mark-to-market as of "
+        verb = "APPENDING" if commit else "WOULD APPEND"
+        print(f"  {verb} ({m['elapsed_days']}-day mark-to-market as of "
               f"{m['as_of'].isoformat()}, prose only, no dated column):", file=out)
         print(f"      price={m['price']}  btc={m['btc_price']}  "
               f"return={m['return_pct']}%  alpha={m['alpha_pct']}pp", file=out)
@@ -686,7 +688,7 @@ async def run(
                     do_mark=do_mark,
                 )
             )
-            render_plan(plans[-1], out=out)
+            render_plan(plans[-1], out=out, commit=commit)
     except FetchFailed as exc:
         # Every write happens after planning completes, so aborting here
         # guarantees nothing was written. A partially-backfilled ledger is worse

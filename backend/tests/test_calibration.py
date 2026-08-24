@@ -999,5 +999,172 @@ class TestPriceCache(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(bf.DEFAULT_MIN_INTERVAL_SECONDS, 15)
 
 
+class TestPriceLookupInvariant(unittest.TestCase):
+    def test_found_without_a_price_is_rejected_at_construction(self):
+        # Otherwise it flows into float() and raises TypeError frames away.
+        with self.assertRaises(ValueError):
+            cal.PriceLookup("found")
+        with self.assertRaises(ValueError):
+            cal.PriceLookup("found", price=None)
+
+    def test_no_data_and_failed_may_have_no_price(self):
+        self.assertIsNone(cal.PriceLookup("no_data").price)
+        self.assertIsNone(cal.PriceLookup("failed", detail="429").price)
+
+    def test_found_with_a_price_is_fine(self):
+        self.assertEqual(cal.PriceLookup("found", price=0.0).price, 0.0)
+
+
+class TestNullEntryPrice(unittest.IsolatedAsyncioTestCase):
+    """The 11 June Aave INSUFFICIENT_DATA row has a NULL entry_price_usd.
+
+    The HTTP endpoint can be pointed at it, so this path is reachable in
+    production, not merely theoretical.
+    """
+
+    def _patch_record(self, row):
+        session = AsyncMock()
+        session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
+        ctx = AsyncMock()
+        ctx.__aenter__.return_value = session
+        ctx.__aexit__.return_value = False
+        return patch.object(cal, "async_session", lambda: ctx)
+
+    async def test_null_entry_price_is_a_clean_error_not_a_typeerror(self):
+        row = ("aave", None, 62779.0, datetime(2026, 6, 11, tzinfo=timezone.utc),
+               "Aave", "INSUFFICIENT_DATA")
+        fetch = AsyncMock()
+        with self._patch_record(row):
+            with patch.object(cal, "fetch_price_on", fetch):
+                result = await cal.compute_checkpoint(
+                    "89b57672-0000-4000-8000-000000000001", 30, today=date(2026, 8, 24)
+                )
+        self.assertEqual(result, {"error": "record has no entry_price_usd"})
+        # And it bails before spending a CoinGecko call.
+        fetch.assert_not_called()
+
+
+class TestRecordSignposts(unittest.IsolatedAsyncioTestCase):
+    """signposts / review_date land via a separate function because
+    record_calibration's signature is frozen (CONTRACTS 3.1)."""
+
+    def _patch_session(self, *, column_present=True, rowcount=1):
+        session = AsyncMock()
+        self.executed = []
+
+        async def execute(statement, params=None):
+            self.executed.append((str(statement), params))
+            if "information_schema" in str(statement):
+                return SimpleNamespace(fetchone=lambda: (1,) if column_present else None)
+            return SimpleNamespace(rowcount=rowcount)
+
+        session.execute = execute
+        ctx = AsyncMock()
+        ctx.__aenter__.return_value = session
+        ctx.__aexit__.return_value = False
+        return patch.object(cal, "async_session", lambda: ctx)
+
+    async def test_writes_signposts_and_review_date(self):
+        with self._patch_session():
+            ok = await cal.record_signposts(
+                "815e976e-0000-4000-8000-000000000005",
+                ["RTK subscriber growth stalls", "unlock cliff announced"],
+                "2026-09-16",
+            )
+        self.assertTrue(ok)
+        update = [e for e in self.executed if "UPDATE" in e[0]][0]
+        self.assertEqual(
+            update[1]["signposts"],
+            '["RTK subscriber growth stalls", "unlock cliff announced"]',
+        )
+        self.assertEqual(update[1]["review_date"], date(2026, 9, 16))
+
+    async def test_uses_cast_not_the_postfix_colon_colon(self):
+        # `:param::jsonb` collides with SQLAlchemy's bind syntax and raises
+        # PostgresSyntaxError - the same trap already fixed for ::vector
+        # (PROJECT_DECISIONS D2). Verified against live Postgres as well.
+        with self._patch_session():
+            await cal.record_signposts("815e976e-0000-4000-8000-000000000005", ["x"], None)
+        sql = [e for e in self.executed if "UPDATE" in e[0]][0][0]
+        self.assertIn("CAST(:signposts AS jsonb)", sql)
+        self.assertNotIn("::jsonb", sql)
+
+    async def test_no_op_when_both_arguments_are_none(self):
+        session_used = False
+
+        def _fail():
+            nonlocal session_used
+            session_used = True
+            raise AssertionError("should not open a session")
+
+        with patch.object(cal, "async_session", _fail):
+            self.assertFalse(await cal.record_signposts("some-id", None, None))
+        self.assertFalse(session_used)
+
+    async def test_no_op_when_migration_0003_has_not_run(self):
+        with self._patch_session(column_present=False):
+            ok = await cal.record_signposts(
+                "815e976e-0000-4000-8000-000000000005", ["x"], "2026-09-16"
+            )
+        self.assertFalse(ok)
+        self.assertEqual([e for e in self.executed if "UPDATE" in e[0]], [])
+
+    async def test_unparseable_review_date_is_dropped_not_fatal(self):
+        with self._patch_session():
+            ok = await cal.record_signposts(
+                "815e976e-0000-4000-8000-000000000005", ["x"], "not-a-date"
+            )
+        self.assertTrue(ok, "signposts should still land")
+        update = [e for e in self.executed if "UPDATE" in e[0]][0]
+        self.assertIsNone(update[1]["review_date"])
+
+    async def test_only_a_review_date_is_enough(self):
+        with self._patch_session():
+            ok = await cal.record_signposts(
+                "815e976e-0000-4000-8000-000000000005", None, "2026-09-16"
+            )
+        self.assertTrue(ok)
+        update = [e for e in self.executed if "UPDATE" in e[0]][0]
+        self.assertIsNone(update[1]["signposts"])
+        self.assertEqual(update[1]["review_date"], date(2026, 9, 16))
+
+    async def test_empty_signpost_list_is_stored_as_an_answer(self):
+        # "the Chair named none" is information; None means "not supplied".
+        with self._patch_session():
+            ok = await cal.record_signposts(
+                "815e976e-0000-4000-8000-000000000005", [], None
+            )
+        self.assertTrue(ok)
+        update = [e for e in self.executed if "UPDATE" in e[0]][0]
+        self.assertEqual(update[1]["signposts"], "[]")
+
+    async def test_unknown_record_returns_false(self):
+        with self._patch_session(rowcount=0):
+            ok = await cal.record_signposts(
+                "00000000-0000-4000-8000-000000000999", ["x"], "2026-09-16"
+            )
+        self.assertFalse(ok)
+
+    async def test_database_failure_is_non_fatal(self):
+        # Calibration capture must never take the evaluation pipeline down.
+        def _boom():
+            raise RuntimeError("connection refused")
+
+        with patch.object(cal, "async_session", _boom):
+            self.assertFalse(
+                await cal.record_signposts("some-id", ["x"], "2026-09-16")
+            )
+
+    async def test_record_calibration_signature_is_unchanged(self):
+        import inspect
+
+        params = list(inspect.signature(cal.record_calibration).parameters)
+        self.assertEqual(
+            params,
+            ["evaluation_id", "project_name", "ticker", "coingecko_id", "category",
+             "recommendation", "overall_score", "chair_confidence", "vetoed"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

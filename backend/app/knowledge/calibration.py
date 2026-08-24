@@ -9,16 +9,20 @@ job happened to run. See ``docs/CONTRACTS.md`` §3.2.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from sqlalchemy import text as sql_text
 
 from app.database import async_session
+
+if TYPE_CHECKING:
+    from sqlalchemy import CursorResult
 
 # CoinGecko courtesy behaviour (exponential backoff on 429 plus the optional
 # demo API key header) already exists in the tools layer and is reused verbatim
@@ -48,6 +52,7 @@ __all__ = [
     "observation_timestamp",
     "reconstruction_note",
     "record_calibration",
+    "record_signposts",
     "resolve_target_date",
     "update_checkpoint",
 ]
@@ -245,6 +250,11 @@ class PriceLookup:
         market_cap: float | None = None,
         detail: str = "",
     ) -> None:
+        if status == "found" and price is None:
+            # The invariant every caller relies on. Enforced here rather than
+            # left as a convention, because a "found" with no price would flow
+            # straight into float() and raise TypeError several frames away.
+            raise ValueError("PriceLookup('found') requires a price")
         self.status = status
         self.price = price
         self.market_cap = market_cap
@@ -455,6 +465,98 @@ async def record_calibration(
     return str(record_id)
 
 
+async def record_signposts(
+    record_id: str,
+    signposts: list[str] | None,
+    review_date: str | None,
+) -> bool:
+    """Attach the Chair's falsification criteria to a calibration record.
+
+    ``record_calibration``'s signature is frozen (docs/CONTRACTS.md §3.1), so
+    these two fields cannot become parameters on it; they land here instead, as
+    a follow-up update against the row it just created.
+
+    Both columns arrive with migration ``0003``. If that migration has not run
+    the function no-ops cleanly and returns False, rather than raising at a call
+    site that must never break the evaluation pipeline.
+
+    Returns True only when a row was actually updated.
+
+    Args:
+        record_id: the ``calibration_records`` row to update.
+        signposts: named observables that would cause the committee to revisit
+            the call. Stored as jsonb.
+        review_date: calendar day to re-evaluate, ``YYYY-MM-DD``. Stored as a
+            date; a value that will not parse is dropped with a warning rather
+            than failing the whole update.
+    """
+    if signposts is None and review_date is None:
+        return False
+
+    parsed_review_date: date | None = None
+    if review_date:
+        try:
+            parsed_review_date = date.fromisoformat(review_date.strip())
+        except (ValueError, AttributeError):
+            logger.warning(
+                "Ignoring unparseable review_date %r for calibration record %s",
+                review_date,
+                record_id,
+            )
+
+    # An empty list is a real answer ("the Chair named no signposts") and is
+    # stored as such; None means "not supplied" and leaves the column alone.
+    signposts_json = json.dumps(signposts) if signposts is not None else None
+    if signposts_json is None and parsed_review_date is None:
+        return False
+
+    try:
+        async with async_session() as session:
+            if not await column_exists(session, "signposts"):
+                logger.info(
+                    "Skipping signposts for %s: migration 0003 has not run", record_id
+                )
+                return False
+
+            # CAST(... AS jsonb), never `:param::jsonb`. The `::` postfix cast
+            # collides with SQLAlchemy's `:param` bind syntax — the same bug
+            # already fixed once for `::vector` in knowledge/__init__.py
+            # (PROJECT_DECISIONS D2).
+            result = await session.execute(
+                sql_text(
+                    """
+                    UPDATE calibration_records
+                    SET signposts = COALESCE(CAST(:signposts AS jsonb), signposts),
+                        review_date = COALESCE(:review_date, review_date)
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "signposts": signposts_json,
+                    "review_date": parsed_review_date,
+                    "id": uuid.UUID(record_id),
+                },
+            )
+            await session.commit()
+    except Exception as exc:
+        # Same posture as record_calibration: calibration capture must never
+        # take the evaluation down with it.
+        logger.warning("Recording signposts failed (non-fatal) for %s: %s", record_id, exc)
+        return False
+
+    # session.execute() is typed as Result; a DML statement always yields a
+    # CursorResult, which is where rowcount lives.
+    updated = bool(cast("CursorResult[Any]", result).rowcount)
+    if updated:
+        logger.info(
+            "Signposts recorded for %s: %d signpost(s), review_date=%s",
+            record_id,
+            len(signposts) if signposts else 0,
+            parsed_review_date,
+        )
+    return updated
+
+
 async def compute_checkpoint(
     record_id: str,
     horizon_days: int,
@@ -509,7 +611,11 @@ async def compute_checkpoint(
             )
         }
     if entry_price is None:
+        # Reachable: the 11 June Aave INSUFFICIENT_DATA row has a NULL
+        # entry_price_usd, and the HTTP endpoint will happily be pointed at it.
+        # Without this guard the float() below raises TypeError.
         return {"error": "record has no entry_price_usd"}
+    entry_price_value = float(entry_price)
 
     lookup = await fetch_price_on(coingecko_id, target_date)
     if lookup.failed:
@@ -523,7 +629,8 @@ async def compute_checkpoint(
             ),
             "fetch_failed": True,
         }
-    if not lookup.ok:
+    observed_price = lookup.price
+    if not lookup.ok or observed_price is None:
         return {
             "error": (
                 f"no historical price for {coingecko_id!r} on "
@@ -531,7 +638,6 @@ async def compute_checkpoint(
             ),
             "fetch_failed": False,
         }
-    observed_price = lookup.price
 
     # The BTC benchmark MUST come from the same date as the asset price.
     # Comparing a historical asset price against BTC spot would be a worse bug
@@ -555,7 +661,9 @@ async def compute_checkpoint(
             record_id,
         )
 
-    return_pct, alpha_pct = compute_returns(entry_price, observed_price, btc_entry, btc_observed)
+    return_pct, alpha_pct = compute_returns(
+        entry_price_value, observed_price, btc_entry, btc_observed
+    )
 
     return {
         "record_id": record_id,
@@ -568,7 +676,7 @@ async def compute_checkpoint(
         "observed_at": observation_timestamp(target_date),
         "is_reconstruction": target_date < today,
         "days_late": (today - target_date).days,
-        "entry_price": float(entry_price),
+        "entry_price": entry_price_value,
         "observed_price": float(observed_price),
         "btc_price_at_entry": float(btc_entry) if btc_entry is not None else None,
         "btc_price_observed": float(btc_observed) if btc_observed is not None else None,

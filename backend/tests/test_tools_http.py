@@ -94,6 +94,121 @@ class CoinGeckoBackoffTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[-1]["x-cg-demo-api-key"], "demo-key")
 
 
+class CoinGeckoBodyLevelRateLimitTest(unittest.IsolatedAsyncioTestCase):
+    """HTTP 200 whose body is really a 429.
+
+    ``agent/calibration`` found this against /coins/{id}/history and handles it
+    in ``app.knowledge.calibration.body_rate_limited``. The agent-facing tools in
+    ``app/tools/coingecko.py`` share the same free-tier quota and the same
+    ``_get_with_backoff`` pattern but have no equivalent check, so the trap is
+    still open on the path the committee actually runs on.
+
+    ``_get_with_backoff`` only inspects ``response.status_code``, so a 200 ends
+    the retry loop immediately and the body is parsed as data.
+    """
+
+    RATE_LIMITED_BODY = {
+        "status": {
+            "error_code": 429,
+            "error_message": "You've exceeded the Rate Limit. Please visit ...",
+        }
+    }
+
+    def test_the_detector_exists_and_recognises_the_body(self):
+        """Cross-check: calibration's detector is correct and reusable."""
+        from app.knowledge.calibration import body_rate_limited
+
+        self.assertTrue(body_rate_limited(self.RATE_LIMITED_BODY))
+        self.assertFalse(body_rate_limited({"aave": {"usd": 63.0}}))
+
+    async def test_QA_042_body_level_429_reaches_get_price_unretried(self):
+        """Characterisation of QA-042: this is what happens today.
+
+        One request, no retries, and the rate limit is reported to the agent as
+        "Coin 'aave' not found. Use CoinGecko coin ID ...".
+        """
+        from app.tools import coingecko
+
+        attempts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(1)
+            return httpx.Response(200, json=self.RATE_LIMITED_BODY)
+
+        with mock_http(handler), instant_sleep() as delays:
+            result = await coingecko.get_price({"coin_id": "aave"})
+
+        self.assertEqual(len(attempts), 1, "a body-level 429 does not enter the retry ladder")
+        self.assertEqual(delays, [])
+        self.assertIn("not found", result["error"])
+
+    @unittest.expectedFailure
+    async def test_QA_042_get_price_must_not_report_a_rate_limit_as_coin_not_found(self):
+        """QA-042 (HIGH): a quota error is reported as a nonexistent token.
+
+        The HTTP-429 path already returns a correct "rate limit persisted"
+        message; the body-level 429 bypasses it entirely because the status code
+        is 200. ``coin_id not in data`` is then true and the tool tells the agent
+        the coin does not exist.
+
+        That is the worst possible mistranslation for this system: an agent told
+        a token is not listed on CoinGecko will write that into its findings as
+        a fact about the project rather than as a data gap, and the calibration
+        ledger already shows the committee acting on INSUFFICIENT_DATA verdicts.
+        """
+        from app.tools import coingecko
+
+        with mock_http(json_response(self.RATE_LIMITED_BODY)), instant_sleep():
+            result = await coingecko.get_price({"coin_id": "aave"})
+
+        self.assertIn("error", result)
+        self.assertNotIn("not found", result["error"])
+        self.assertIn("rate limit", result["error"].lower())
+
+    @unittest.expectedFailure
+    async def test_QA_042_get_token_info_must_not_return_a_null_success(self):
+        """QA-042 (HIGH), the worse half: get_token_info reports success.
+
+        There is no ``coin_id not in data`` guard on this path. The rate-limit
+        body has no ``market_data`` key, so every metric resolves to None and the
+        tool returns a complete success envelope -- with a CoinGecko source
+        record attached (see QA-031). Supply, FDV and genesis_date all arrive as
+        null with no error anywhere, and genesis_date being null is exactly what
+        makes the structural gate skip its age check (QA-014).
+        """
+        from app.tools import coingecko
+
+        with mock_http(json_response(self.RATE_LIMITED_BODY)), instant_sleep():
+            result = await coingecko.get_token_info({"coin_id": "aave"})
+
+        self.assertIn("error", result)
+
+    @unittest.expectedFailure
+    async def test_QA_042_body_level_429_must_be_retried_like_an_http_429(self):
+        """QA-042 (HIGH): it is the same quota, so it deserves the same ladder."""
+        from app.tools import coingecko
+
+        attempts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(1)
+            return httpx.Response(200, json=self.RATE_LIMITED_BODY)
+
+        with mock_http(handler), instant_sleep() as delays:
+            await coingecko.get_price({"coin_id": "aave"})
+
+        self.assertEqual(len(attempts), 5)
+        self.assertEqual(delays, [2, 4, 8, 16])
+
+    async def test_a_genuinely_absent_coin_is_still_reported_as_not_found(self):
+        """Guard against over-correcting QA-042 into swallowing real 404s."""
+        from app.tools import coingecko
+
+        with mock_http(json_response({})), instant_sleep():
+            result = await coingecko.get_price({"coin_id": "not-a-coin"})
+        self.assertIn("not found", result["error"])
+
+
 class CoinGeckoArgumentTest(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_coin_id_produces_a_specific_error(self):
         from app.tools import coingecko

@@ -9,15 +9,15 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | Agent | Branch | Responsibility | Status |
 |---|---|---|---|
 | Architecture | `agent/architecture` | Tree-4 triage, circular-dependency fix, ADRs | Integrated |
-| Calibration | `agent/calibration` | Checkpoint date bug, historical pricing, backfill | **In progress** |
+| Calibration | `agent/calibration` | Checkpoint date bug, historical pricing, backfill | Integrated (backfill dry-run pending) |
 | Persistence | `agent/persistence` | Report persistence, evaluation↔calibration linkage, migrations | Integrated |
 | Personas | `agent/personas` | Missing `tech_infra_analyst` persona, Risk Officer redesign | **In progress** |
 | Retrospective | `agent/retrospective` | 67-day qualitative performance retrospective | **In progress** |
 | DevOps | `agent/devops` | CI, local dev environment, dependency vulnerabilities | **In progress** |
 | QA | `agent/qa` | Independent test suite, adversarial testing | **In progress** |
-| Security | `agent/security` | Auth, injection, secrets, XSS review | **In progress** |
+| Security | `agent/security` | Auth, injection, secrets, XSS review | Integrated |
 | UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | **In progress** |
-| Retrieval | `agent/retrieval` | Keyword vs semantic retrieval evaluation, pgvector wiring | **In progress** |
+| Retrieval | `agent/retrieval` | Keyword vs semantic retrieval evaluation, pgvector wiring | Integrated |
 | Core | `agent/core` | Score sequencing, chair truncation, signposts ledger, migration autorun | **In progress** |
 
 ## Ownership

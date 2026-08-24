@@ -70,6 +70,25 @@ async def trigger_evaluation(
     db.add(evaluation)
     await db.flush()
 
+    # Commit before running the pipeline. Two reasons, the first load-bearing:
+    #
+    # 1. `record_calibration` runs inside the orchestrator on its OWN session,
+    #    i.e. a separate connection and transaction, and inserts a row whose
+    #    `calibration_records.evaluation_id` foreign key points at this row.
+    #    A row that is only flushed is invisible to that other transaction, so
+    #    the FK check fails immediately with ForeignKeyViolationError. The
+    #    orchestrator catches it, logs "Calibration capture failed
+    #    (non-fatal)" and continues — so passing a real evaluation_id without
+    #    committing first would silently stop the calibration ledger recording
+    #    anything at all. Verified against Postgres 16: with the flush alone
+    #    record_calibration returns None and writes no row; after the commit it
+    #    returns an id and the row is linked.
+    # 2. A run is many minutes long. Committing here means the evaluation is
+    #    visible as `running` for its whole duration instead of appearing only
+    #    once it has finished.
+    await db.commit()
+    evaluation_id = str(evaluation.id)
+
     # Run orchestrator
     orchestrator = Orchestrator()
     try:
@@ -83,6 +102,7 @@ async def trigger_evaluation(
                 "coingecko_id": req.coingecko_id,
             },
             knowledge_context=req.additional_context,
+            evaluation_id=evaluation_id,
         )
 
         # Store agent outputs
@@ -104,7 +124,7 @@ async def trigger_evaluation(
         evaluation.completed_at = datetime.now(timezone.utc)
 
         return EvaluateResponse(
-            evaluation_id=str(evaluation.id),
+            evaluation_id=evaluation_id,
             project_id=str(project.id),
             status="completed",
             project_name=req.project_name,

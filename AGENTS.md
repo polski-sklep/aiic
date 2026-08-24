@@ -8,15 +8,15 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 
 | Agent | Branch | Responsibility | Status |
 |---|---|---|---|
-| Architecture | `agent/architecture` | Tree-4 triage, circular-dependency fix, ADRs | Not started |
-| Calibration | `agent/calibration` | Checkpoint date bug, historical pricing, backfill | Not started |
-| Persistence | `agent/persistence` | Report persistence, evaluation↔calibration linkage, migrations | Not started |
-| Personas | `agent/personas` | Missing `tech_infra_analyst` persona, Risk Officer redesign | Not started |
-| Retrospective | `agent/retrospective` | 67-day qualitative performance retrospective | Not started |
-| DevOps | `agent/devops` | CI, local dev environment, dependency vulnerabilities | Not started |
-| QA | `agent/qa` | Independent test suite, adversarial testing | Not started |
-| Security | `agent/security` | Auth, injection, secrets, XSS review | Not started |
-| UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | Not started |
+| Architecture | `agent/architecture` | Tree-4 triage, circular-dependency fix, ADRs | **In progress** |
+| Calibration | `agent/calibration` | Checkpoint date bug, historical pricing, backfill | **In progress** |
+| Persistence | `agent/persistence` | Report persistence, evaluation↔calibration linkage, migrations | **In progress** |
+| Personas | `agent/personas` | Missing `tech_infra_analyst` persona, Risk Officer redesign | **In progress** |
+| Retrospective | `agent/retrospective` | 67-day qualitative performance retrospective | **In progress** |
+| DevOps | `agent/devops` | CI, local dev environment, dependency vulnerabilities | **In progress** |
+| QA | `agent/qa` | Independent test suite, adversarial testing | **In progress** |
+| Security | `agent/security` | Auth, injection, secrets, XSS review | **In progress** |
+| UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | **In progress** |
 
 ## Ownership
 

@@ -1,7 +1,7 @@
 """Binance public API tools for candles, orderbook depth, and derived TA levels."""
 from __future__ import annotations
 
-from typing import TypedDict, cast
+from typing import cast
 
 import httpx
 

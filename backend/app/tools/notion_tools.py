@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import TypedDict, cast
+from typing import TypedDict
 
 from app.config import get_settings
 from app.llm import ToolDefinition

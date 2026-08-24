@@ -6,6 +6,8 @@ two defaults that carry a credential shape.
 """
 from __future__ import annotations
 
+import pathlib
+
 import os
 import unittest
 from unittest import mock
@@ -64,23 +66,42 @@ class SettingsResolutionTest(unittest.TestCase):
         settings = self.build()
         self.assertNotIn("committee_dev_pw", settings.database_url)
 
-    @unittest.expectedFailure
-    def test_QA_037_jwt_secret_must_not_default_to_empty(self):
-        """QA-037 (MED): 98390a6 removed the hardcoded value but left "".
+    def test_QA_037_jwt_secret_is_declared_but_unused(self):
+        """QA-037 (MED), assessed and deliberately left as it is.
 
-        An empty signing secret is not safer than a known one -- it is the same
-        failure with no error message. Nothing refuses to start, so a deployment
-        that forgets JWT_SECRET signs tokens with an empty key.
+        An empty signing secret would not be safer than a known one -- it is the
+        same failure with no error message. But nothing in this codebase signs or
+        verifies a token: `jwt_secret` has zero readers, so an empty value cannot
+        weaken anything that exists. Making it required would fail startup for a
+        feature that does not exist.
+
+        This test therefore pins the *premise* rather than a raise. It fails the
+        moment the premise stops holding -- i.e. the moment something starts
+        reading `jwt_secret` -- at which point the setting must become required
+        and startup must refuse an empty value. See security-review SEC-03.
         """
-        with self.assertRaises(Exception):
-            self.build()
+        settings = self.build()
+        self.assertEqual(settings.jwt_secret, "")
+
+        app_dir = pathlib.Path(__file__).resolve().parents[1] / "app"
+        readers = [
+            path.relative_to(app_dir).as_posix()
+            for path in app_dir.rglob("*.py")
+            if "jwt_secret" in path.read_text(encoding="utf-8")
+            and path.name != "config.py"
+        ]
+        self.assertEqual(
+            readers,
+            [],
+            "jwt_secret now has a reader -- make it required and refuse an empty "
+            f"value at startup. Readers: {readers}",
+        )
 
 
 class ConfigDisciplineTest(unittest.TestCase):
     """CONTRACTS 3.5: never read os.environ directly for config."""
 
     def test_no_module_reads_os_environ_for_configuration(self):
-        import pathlib
         import re
 
         app_root = pathlib.Path(__file__).resolve().parents[1] / "app"

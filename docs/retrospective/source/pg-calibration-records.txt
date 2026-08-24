@@ -1,0 +1,265 @@
+-[ RECORD 1 ]---------+-----------------------------------------------------------
+id                    | 89b57672-88a1-4be3-a511-f22f3b2e045c
+evaluation_id         | 
+project_name          | Aave
+ticker                | AAVE
+coingecko_id          | aave
+category              | DeFi
+recommendation        | INSUFFICIENT_DATA
+overall_score         | 
+chair_confidence      | unknown
+vetoed                | f
+entry_price_usd       | 
+entry_market_cap_usd  | 
+entry_captured_at     | 2026-06-11 13:28:53.440042+00
+btc_price_at_entry    | 62779
+eth_price_at_entry    | 1647.470000000000027284841053187847137451171875
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-11 13:28:53.5118+00
+-[ RECORD 2 ]---------+-----------------------------------------------------------
+id                    | df935a82-cb85-4464-abba-c819b1cd322e
+evaluation_id         | 
+project_name          | Aave
+ticker                | AAVE
+coingecko_id          | aave
+category              | DeFi
+recommendation        | PASS
+overall_score         | 77.20
+chair_confidence      | high
+vetoed                | f
+entry_price_usd       | 63.090000000000003410605131648480892181396484375
+entry_market_cap_usd  | 954778429.04428374767303466796875
+entry_captured_at     | 2026-06-11 13:47:05.402861+00
+btc_price_at_entry    | 62964
+eth_price_at_entry    | 1652.200000000000045474735088646411895751953125
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-11 13:47:05.490368+00
+-[ RECORD 3 ]---------+-----------------------------------------------------------
+id                    | 972cacc2-108b-4571-8a15-af74a1a17a1f
+evaluation_id         | 
+project_name          | Plasma
+ticker                | XPL
+coingecko_id          | plasma
+category              | L1
+recommendation        | INSUFFICIENT_DATA
+overall_score         | 35.30
+chair_confidence      | unknown
+vetoed                | f
+entry_price_usd       | 0.10877199999999999369126868487001047469675540924072265625
+entry_market_cap_usd  | 275481693.631335079669952392578125
+entry_captured_at     | 2026-06-18 10:12:34.997485+00
+btc_price_at_entry    | 64009
+eth_price_at_entry    | 1741.779999999999972715158946812152862548828125
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-18 10:12:35.09487+00
+-[ RECORD 4 ]---------+-----------------------------------------------------------
+id                    | 5a297bf6-1594-4fcd-9ce0-880dedb7785b
+evaluation_id         | 
+project_name          | Plasma
+ticker                | XPL
+coingecko_id          | plasma
+category              | L1
+recommendation        | PASS
+overall_score         | 34.30
+chair_confidence      | high
+vetoed                | f
+entry_price_usd       | 0.10605799999999999949640283603002899326384067535400390625
+entry_market_cap_usd  | 267187053.372876346111297607421875
+entry_captured_at     | 2026-06-18 10:45:08.958349+00
+btc_price_at_entry    | 63983
+eth_price_at_entry    | 1740.05999999999994543031789362430572509765625
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-18 10:45:09.046253+00
+-[ RECORD 5 ]---------+-----------------------------------------------------------
+id                    | 815e976e-e4c6-4e94-96ea-f6832e143116
+evaluation_id         | 
+project_name          | GEODNET
+ticker                | GEOD
+coingecko_id          | geodnet
+category              | DePIN
+recommendation        | WATCH
+overall_score         | 62.60
+chair_confidence      | medium
+vetoed                | f
+entry_price_usd       | 0.2166909999999999947295492574994568713009357452392578125
+entry_market_cap_usd  | 97557145.4245398938655853271484375
+entry_captured_at     | 2026-06-18 11:02:38.62269+00
+btc_price_at_entry    | 64090
+eth_price_at_entry    | 1746.720000000000027284841053187847137451171875
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-18 11:02:38.62916+00
+-[ RECORD 6 ]---------+-----------------------------------------------------------
+id                    | 012d451c-387d-4343-94ad-6fe0eccbdec8
+evaluation_id         | 
+project_name          | Ethena
+ticker                | ENA
+coingecko_id          | ethena
+category              | DeFi
+recommendation        | WATCH
+overall_score         | 53.20
+chair_confidence      | medium
+vetoed                | f
+entry_price_usd       | 0.0944210000000000049258375156568945385515689849853515625
+entry_market_cap_usd  | 876656076.373898029327392578125
+entry_captured_at     | 2026-06-18 11:20:28.898862+00
+btc_price_at_entry    | 63960
+eth_price_at_entry    | 1744.450000000000045474735088646411895751953125
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-18 11:20:28.903604+00
+-[ RECORD 7 ]---------+-----------------------------------------------------------
+id                    | b28e816a-7afb-4d56-a9c4-dbc2af2cca5d
+evaluation_id         | 
+project_name          | Morpho
+ticker                | MORPHO
+coingecko_id          | morpho
+category              | DeFi
+recommendation        | WATCH
+overall_score         | 65.60
+chair_confidence      | medium
+vetoed                | f
+entry_price_usd       | 1.9899999999999999911182158029987476766109466552734375
+entry_market_cap_usd  | 1289830861.83017253875732421875
+entry_captured_at     | 2026-06-18 11:38:28.008926+00
+btc_price_at_entry    | 63964
+eth_price_at_entry    | 1743.80999999999994543031789362430572509765625
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-18 11:38:28.014605+00
+-[ RECORD 8 ]---------+-----------------------------------------------------------
+id                    | 65938079-76f3-4efa-88ec-d894e5618505
+evaluation_id         | 
+project_name          | Pendle
+ticker                | PENDLE
+coingecko_id          | pendle
+category              | DeFi
+recommendation        | WATCH
+overall_score         | 62.30
+chair_confidence      | medium
+vetoed                | f
+entry_price_usd       | 1.4299999999999999378275106209912337362766265869140625
+entry_market_cap_usd  | 245555715.3829611837863922119140625
+entry_captured_at     | 2026-06-18 11:56:39.840304+00
+btc_price_at_entry    | 63889
+eth_price_at_entry    | 1739.799999999999954525264911353588104248046875
+price_30d             | 
+price_90d             | 
+price_180d            | 
+checked_30d_at        | 
+checked_90d_at        | 
+checked_180d_at       | 
+btc_price_30d         | 
+btc_price_90d         | 
+btc_price_180d        | 
+return_30d_pct        | 
+return_90d_pct        | 
+return_180d_pct       | 
+alpha_vs_btc_30d_pct  | 
+alpha_vs_btc_90d_pct  | 
+alpha_vs_btc_180d_pct | 
+outcome_notes         | 
+created_at            | 2026-06-18 11:56:39.845677+00
+

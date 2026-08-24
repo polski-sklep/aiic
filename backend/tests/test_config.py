@@ -48,7 +48,6 @@ class SettingsResolutionTest(unittest.TestCase):
         (handoff 9.3, --force-recreate)."""
         self.assertIs(get_settings(), get_settings())
 
-    @unittest.expectedFailure
     def test_QA_036_database_url_default_must_not_embed_a_password(self):
         """QA-036 (MED): the default carries ``committee:committee_dev_pw``.
 

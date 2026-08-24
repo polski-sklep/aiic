@@ -9,7 +9,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
 
     # Database
-    database_url: str = "postgresql+asyncpg://committee:committee_dev_pw@localhost:5432/committee"
+    # No credential in the default. Compose always supplies DATABASE_URL, built
+    # from POSTGRES_PASSWORD, so this default is only ever reached by a caller
+    # running outside the stack — and a plausible-looking password baked into
+    # source is exactly what gets copied into a real deployment (QA-036). An
+    # empty value fails fast and visibly at connect time instead.
+    database_url: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

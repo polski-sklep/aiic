@@ -18,6 +18,7 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | Security | `agent/security` | Auth, injection, secrets, XSS review | Integrated |
 | UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | **In progress** |
 | Retrieval | `agent/retrieval` | Keyword vs semantic retrieval evaluation, pgvector wiring | Integrated |
+| Falsifiability | `agent/falsifiability` | Dated risks, mandatory upside branch (retrospective R4, R7) | **In progress** |
 | Core | `agent/core` | Score sequencing, chair truncation, signposts ledger, migration autorun | **In progress** |
 
 ## Ownership

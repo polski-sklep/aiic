@@ -27,6 +27,7 @@ owner fix it.
 | `agent/ui-report` | `backend/app/tpl.html`, `backend/app/api/reports.py`, `backend/app/static/**` |
 | `agent/retrieval` | `backend/app/knowledge/__init__.py`, `backend/app/api/knowledge.py`, `backend/app/tools/semantic.py`, `docs/reviews/retrieval-evaluation.md` |
 | `agent/core` | `backend/app/main.py`, `backend/app/agents/orchestrator.py`, `backend/app/agents/chair.py`, `backend/app/utils/types.py`, `backend/app/api/memory.py`, `backend/app/api/tools.py`, `backend/app/api/projects.py`, `backend/migrations/0003_*.sql` |
+| `agent/falsifiability` | `backend/app/agents/base.py`, `backend/app/memory/committee/economics/**`, `.../fed-intelligence/**`, `.../competitive-intel/**` |
 | orchestrator only | `README.md`, `AGENTS.md`, `PROJECT_DECISIONS.md`, `docs/CONTRACTS.md`, `AIIC_HANDOFF.md`, `.gitignore` |
 
 ---

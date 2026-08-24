@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.database import Base
@@ -162,4 +162,9 @@ class CalibrationRecord(Base):
     # Added by backend/migrations/0002_calibration_outcome_notes.sql.
     # CONTRACTS §3.2: a backfilled checkpoint must be marked as such here.
     outcome_notes = Column(Text)
+    # Added by backend/migrations/0003_calibration_signposts_review_date.sql.
+    # The Chair emits both (agents/chair.py `signposts`, `review_date`) and the
+    # ledger used to discard both, so a WATCH had no falsifier and no expiry.
+    signposts = Column(JSONB)
+    review_date = Column(Date)
     created_at = Column(DateTime(timezone=True), default=utcnow)

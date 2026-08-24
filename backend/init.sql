@@ -167,9 +167,15 @@ CREATE TABLE calibration_records (
     alpha_vs_btc_90d_pct NUMERIC(10,2),
     alpha_vs_btc_180d_pct NUMERIC(10,2),
     outcome_notes TEXT,
+    -- Mirrored from backend/migrations/0003_calibration_signposts_review_date.sql.
+    -- The Chair already emits both and the ledger used to discard both, which is
+    -- most of why a WATCH is unfalsifiable (handoff 6.5).
+    signposts JSONB,
+    review_date DATE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_calibration_recommendation ON calibration_records(recommendation);
 CREATE INDEX idx_calibration_entry_captured_at ON calibration_records(entry_captured_at);
 CREATE INDEX idx_calibration_evaluation_id ON calibration_records(evaluation_id);
+CREATE INDEX idx_calibration_review_date ON calibration_records(review_date) WHERE review_date IS NOT NULL;

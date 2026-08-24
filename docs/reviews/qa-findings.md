@@ -46,16 +46,21 @@ the ambient environment.
 
 ## 2. Open findings
 
-Eight. Each has a failing test; none can be closed by `agent/qa`.
+Six. Each has a failing test; none can be closed by `agent/qa`.
+
+**QA-026 and QA-036 were closed by the orchestrator after this document was
+written** — both owners had finished, so the fixes were made directly. They are
+kept in the table below with their resolution, because how they were closed is
+the interesting part.
 
 | id | Sev | What breaks | File | Owner | Note |
 | --- | --- | --- | --- | --- | --- |
-| QA-026 | **MED** | `get_definitions` silently drops a name that does not match, so a typo in an agent's `tool_names` costs it a capability permanently and invisibly — no error, no log, and the agent's own output cannot mention a tool it was never offered | `tools/registry.py:33` | `agent/architecture` | **Press on this one.** Two-line fix. This is the silent-capability-loss class handoff §14.3 warns about, and nothing else in the system would ever surface it |
+| QA-026 | **MED** | `get_definitions` silently drops a name that does not match, so a typo in an agent's `tool_names` costs it a capability permanently and invisibly — no error, no log, and the agent's own output cannot mention a tool it was never offered | `tools/registry.py:33` | orchestrator | **CLOSED**, but not the way either side proposed. This test wanted `get_definitions` to raise; the first fix made it warn. Both act at call time, mid-paid-evaluation, on data that is static at import. `validate_agent_tool_names()` now checks every agent's declared names against the registry once at startup — deterministic, loud, and before money is spent. Logged, not fatal. The test stays `expectedFailure` because it asserts the raise, which is deliberately not what happens |
 | QA-024 | MED | A tool returning `None` escapes the dict contract; `base.py` serialises it to the string `"null"` and hands that to the model as a tool result, with no error anywhere | `tools/registry.py:36` | `agent/architecture` | `execute` is typed `-> ToolResult` and does not enforce it |
 | QA-025 | MED | Non-serialisable results pass containment and raise in `base.py::run` at `json.dumps(result, default=str)` — *outside* the registry's try — so one odd tool result fails the **entire agent** | `tools/registry.py:41` + `agents/base.py` | `agent/architecture` | `default=str` is consulted for values, not keys, and never for circular refs |
 | QA-027 | LOW | `register()` silently overwrites a duplicate name and accepts a non-coroutine function; a sync tool fails at call time as `"object dict can't be used in 'await' expression"` | `tools/registry.py:19` | `agent/architecture` | Two tests |
-| QA-037 | MED | `jwt_secret` defaults to `""` and nothing refuses to start, so a deployment that forgets `JWT_SECRET` signs tokens with an empty key | `config.py:28` | **unowned — needs assignment** | Sharper of the two config findings. `98390a6` removed the hardcoded value but left the empty default |
-| QA-036 | MED | `database_url` default embeds `committee:committee_dev_pw` | `config.py:12` | **unowned — needs assignment** | Survived both `c62379c` and `98390a6`. Handoff §14.2 in miniature: two commits say the hardcoded credentials went, one is still here |
+| QA-037 | MED | `jwt_secret` defaults to `""` and nothing refuses to start, so a deployment that forgets `JWT_SECRET` signs tokens with an empty key | `config.py:28` | orchestrator | **Assessed, deliberately not changed.** `jwt_secret` has zero readers — nothing in the codebase signs or verifies a token, so an empty value cannot weaken anything that exists. Documented as dead in `config.py` rather than made required, since making a setting mandatory for a feature that does not exist would fail startup for no benefit. Reopen this the moment auth is added — see SEC-03 |
+| QA-036 | MED | `database_url` default embeds `committee:committee_dev_pw` | `config.py:12` | orchestrator | **CLOSED.** Default is now `""`. Compose always supplies `DATABASE_URL` from `POSTGRES_PASSWORD`, so the default is reachable only from outside the stack, and an empty value fails loudly at connect time. Test unmarked and passing |
 | QA-013b | MED | `_calc_score` has no defence of its own against a non-finite score | `agents/orchestrator.py` | `agent/persistence` | The `extract_score` fix (QA-013) closed the realistic path and is verified. This test constructs `AgentResult(score=float("nan"))` directly, so it pins defence in depth at the second layer. Worth keeping: `extract_score` is not the only way a score reaches `_calc_score` |
 | QA-043b | LOW | `limit` in `format_prior_outputs_section` bounds list items and silently means nothing for a string | `agents/prompt_utils.py` | **unowned — needs assignment** | Not a failing test; pinned by a passing one. See §5 |
 

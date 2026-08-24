@@ -19,14 +19,14 @@ owner fix it.
 | `agent/architecture` | `backend/app/tools/contracts.py`, `backend/app/tools/registry.py`, `backend/app/tools/*.py` import lines, `docs/adr/**`, `docs/triage-tree4.md` |
 | `agent/calibration` | `backend/app/knowledge/calibration.py`, `backend/app/api/calibration.py`, `backend/scripts/**`, `backend/tests/test_calibration.py` |
 | `agent/persistence` | `backend/app/models/__init__.py`, `backend/app/api/evaluate.py`, `backend/app/agents/orchestrator.py`, `backend/app/database.py`, `backend/init.sql`, `backend/migrations/**` |
-| `agent/personas` | `backend/app/memory/**` (both `.md` and `agent_personas.py`) |
+| `agent/personas` | `backend/app/memory/**` (both `.md` and `agent_personas.py`), `backend/app/agents/risk_officer.py` |
 | `agent/retrospective` | `docs/retrospective/**` — analysis only, no code |
 | `agent/devops` | `.github/**`, `backend/Dockerfile`, `docker-compose*.yml`, `backend/requirements*.txt`, `Makefile`, `.env.example`, `pyproject.toml`, `.gitleaks.toml` |
 | `agent/security` | `docs/reviews/security-review.md` — report only, no code fixes |
 | `agent/qa` | `backend/tests/**` **except** `test_calibration.py` |
 | `agent/ui-report` | `backend/app/tpl.html`, `backend/app/api/reports.py`, `backend/app/static/**` |
 | `agent/retrieval` | `backend/app/knowledge/__init__.py`, `backend/app/api/knowledge.py`, `backend/app/tools/semantic.py`, `docs/reviews/retrieval-evaluation.md` |
-| `agent/core` | `backend/app/main.py`, `backend/app/agents/orchestrator.py`, `backend/app/agents/chair.py`, `backend/app/utils/types.py`, `backend/app/api/memory.py`, `backend/migrations/0003_*.sql` |
+| `agent/core` | `backend/app/main.py`, `backend/app/agents/orchestrator.py`, `backend/app/agents/chair.py`, `backend/app/utils/types.py`, `backend/app/api/memory.py`, `backend/app/api/tools.py`, `backend/app/api/projects.py`, `backend/migrations/0003_*.sql` |
 | orchestrator only | `README.md`, `AGENTS.md`, `PROJECT_DECISIONS.md`, `docs/CONTRACTS.md`, `AIIC_HANDOFF.md`, `.gitignore` |
 
 ---

@@ -1,10 +1,37 @@
 from __future__ import annotations
 
-from typing import Literal, NotRequired, TypeAlias, TypedDict
+from typing import Literal, NotRequired, TypeAlias, TypeAliasType, TypedDict
 
 
 JSONPrimitive: TypeAlias = str | int | float | bool | None
-JSONValue: TypeAlias = JSONPrimitive | list["JSONValue"] | dict[str, "JSONValue"]
+
+# `JSONValue` is recursive, and the plain-string forward reference it used to
+# carry —
+#
+#     JSONValue: TypeAlias = JSONPrimitive | list["JSONValue"] | dict[str, "JSONValue"]
+#
+# — is not something Pydantic can resolve. Any model with a `JSONValue`-typed
+# field built as a "not fully defined" TypeAdapter, which took down BOTH
+# `POST /api/tools/{tool_name}` (request validation) and `/openapi.json`
+# (schema generation) with a 500 — one cause, two symptoms, and the second
+# meant the whole API was undocumentable and no client could generate against
+# it (docs/reviews/security-review.md, Observations).
+#
+# `TypeAliasType` gives the alias a real runtime object with a lazily evaluated
+# value, which is what a recursive type needs: Pydantic builds a proper
+# recursive core schema and emits `$defs`/`$ref` in the OpenAPI document.
+#
+# Chosen over the alternatives deliberately:
+#   * `model_rebuild()` at each use site fixes one model and leaves the next
+#     one to rediscover the same 500 in production.
+#   * `dict[str, Any]` on the request model would weaken, for one class, the
+#     type that ~26 modules rely on for static checking.
+# Only `api/tools.py::ToolExecuteRequest` consumes these aliases through
+# Pydantic; every other use is annotation-only. So the blast radius is one
+# class and the strict type survives everywhere.
+JSONValue = TypeAliasType(
+    "JSONValue", "JSONPrimitive | list[JSONValue] | dict[str, JSONValue]"
+)
 JSONObject: TypeAlias = dict[str, JSONValue]
 JSONArray: TypeAlias = list[JSONValue]
 

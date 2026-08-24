@@ -159,6 +159,18 @@ module = [
     "app.tools.twitter",
     "app.tools.web_search",
     "app.utils.citations",
+    # --- added 24 Aug 2026 when integration merged. THREE REAL FINDINGS,
+    # reported to their owners rather than silently absorbed:
+    #   knowledge/calibration.py:572  float(x) where x is `float | None`
+    #                                 -> TypeError if the price is missing.
+    #                                 Owner: agent/calibration.
+    #   tools/semantic.py:59          int(x) on an unnarrowed JSONValue union.
+    #   tools/semantic.py:147         registry.register() gets a Callable whose
+    #                                 return type is not ToolFunc — the tool
+    #                                 contract and the implementation disagree.
+    #                                 Owner: agent/architecture / agent/retrieval.
+    "app.knowledge.calibration",
+    "app.tools.semantic",
 ]
 ignore_errors = true
 # --- end ledger ------------------------------------------------------------

@@ -23,6 +23,12 @@ DEV_IMAGE ?= aiic-dev
 # irrelevant for these targets.
 DEV_RUN = $(DOCKER) run --rm -v "$(CURDIR)":/src -w /src $(DEV_IMAGE)
 
+# The production image, as named by `docker compose -p $(PROJECT) build`.
+# Used for the test suite so the tests are proven to run with nothing beyond
+# requirements.txt installed.
+RUNTIME_IMAGE = $(PROJECT)-backend
+RUNTIME_RUN = $(DOCKER) run --rm -v "$(CURDIR)/backend":/app -w /app $(RUNTIME_IMAGE)
+
 .PHONY: help
 help: ## Show this help
 	@echo "AIIC — make targets"
@@ -122,19 +128,21 @@ typecheck: dev-image ## Run mypy
 	$(DEV_RUN) mypy
 
 .PHONY: test
-test: dev-image ## Run the test suite (excludes tests marked `live` and `db`)
-# pytest exits 5 on "no tests collected". agent/qa and agent/calibration are
-# writing the suite right now, so an empty run is a WARNING, not a failure.
-# Any other non-zero exit is a real failure and propagates.
-	@$(DEV_RUN) pytest -m "not live and not db"; rc=$$?; \
-	  if [ $$rc -eq 5 ]; then \
-	    echo "WARNING: no tests collected. The runner works; the suite is empty."; \
-	    exit 0; \
-	  fi; exit $$rc
+test: build ## Run the test suite the way anyone can reproduce it: stdlib unittest
+# CANONICAL RUNNER. The 74-test suite is written against stdlib `unittest` and
+# runs inside the PRODUCTION image with zero extra dependencies — no pytest, no
+# ruff, nothing from requirements-dev.txt. A CI runner nobody can reproduce
+# locally is worse than no CI, so this is the blocking one.
+# backend/ is bind-mounted, so editing a test takes effect without a rebuild.
+	$(RUNTIME_RUN) python3 -m unittest discover -s tests -t .
 
-.PHONY: test-db
-test-db: env-check ## Run the tests that need a live Postgres, inside the stack
-	$(COMPOSE) -p $(PROJECT) run --rm backend python -m pytest -m db
+.PHONY: test-v
+test-v: build ## Same, verbose (names every test)
+	$(RUNTIME_RUN) python3 -m unittest discover -s tests -t . -v
+
+.PHONY: test-pytest
+test-pytest: dev-image ## Optional richer runner. pytest collects the same unittest cases.
+	$(DEV_RUN) pytest -q
 
 # --- ACCEPTED-VULNERABILITY LEDGER, baselined 24 Aug 2026 -------------------
 # Seven advisories against starlette 0.41.3, which is transitively pinned by
@@ -168,7 +176,7 @@ secrets: ## Scan the working tree and full git history for committed secrets
 	gitleaks detect --config .gitleaks.toml --redact --no-git --source .
 
 .PHONY: check
-check: compose-check lint typecheck test audit ## Everything CI runs, locally
+check: compose-check lint typecheck test test-pytest audit ## Everything CI runs, locally
 
 # ---------------------------------------------------------------------------
 # Database

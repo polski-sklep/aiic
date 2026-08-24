@@ -128,7 +128,7 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
         return base
 
     # Tools every agent has access to (knowledge retrieval)
-    _base_tools: list[str] = ["search_notes", "read_note"]
+    _base_tools: list[str] = ["search_notes", "read_note", "semantic_search_notes"]
 
     def get_tools(self) -> list[ToolDefinition]:
         """Get tool definitions this agent can use (agent-specific + knowledge tools)."""

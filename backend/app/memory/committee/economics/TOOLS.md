@@ -17,25 +17,19 @@
 - Messari
 - Exchange and market data sites
 - Unlock trackers
-- Inputs from Knowledge Agent
-- Inputs from On-Chain Analyst
-- Inputs from Competitive Intel
-- Inputs from Valuation Scorer
 
 ## Preferred Order
 1. Official project documents
 2. Governance and treasury disclosures
-3. Knowledge Agent context pack
-4. On-Chain Analyst evidence
-5. Market and analytics platforms
-6. Investor announcements and reputable reporting
-7. X
+3. On-Chain Analyst evidence
+4. Market and analytics platforms
+5. Investor announcements and reputable reporting
+6. X
 
 ## Tool Usage Rules
 - Start with official disclosures before relying on secondary summaries
 - Separate claimed tokenomics from verified token behavior
 - Use On-Chain Analyst outputs for wallet, flow, concentration, and distribution verification
-- Use Knowledge Agent outputs for historical context, archived disclosures, and prior precedent
 - Use market platforms to assess circulating supply, FDV, liquidity footprint, and emissions context
 - Use unlock trackers as directional tools, then verify against stronger sources where possible
 - Use X for founder behavior, sentiment, expectation management, and narrative analysis

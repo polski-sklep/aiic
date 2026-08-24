@@ -11,18 +11,14 @@
 - Podcasts, panels, and conference appearances
 - Public web sources
 - X
-- Inputs from Knowledge Agent
-- Inputs from On-Chain Analyst
-- Inputs from Economics
 
 ## Preferred Order
 1. Official governance docs and proposal text
 2. Historical proposal outcomes and voting records
 3. Founder and executive primary-source materials
-4. Knowledge Agent context pack
-5. On-Chain Analyst evidence
-6. Public web sources
-7. X
+4. On-Chain Analyst evidence
+5. Public web sources
+6. X
 
 ## Tool Usage Rules
 - Start with formal governance structure before reading reactions to it

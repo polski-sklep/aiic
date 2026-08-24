@@ -13,7 +13,7 @@ from app.tools.notion import (
     create_learning,
     sync_database_to_pgvector,
 )
-from app.knowledge import semantic_search
+from app.knowledge import DEFAULT_SIMILARITY_THRESHOLD, semantic_search
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -37,7 +37,9 @@ class LearningCreate(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     limit: int = 5
-    threshold: float = 0.7
+    # Was 0.7, which returned zero rows for every realistic query against the
+    # live corpus. See app.knowledge.DEFAULT_SIMILARITY_THRESHOLD.
+    threshold: float = DEFAULT_SIMILARITY_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -134,18 +136,59 @@ async def add_learning(req: LearningCreate):
 # Sync: Notion → pgvector
 # ---------------------------------------------------------------------------
 
+async def _count_chunks(source_type: str) -> int:
+    """How many chunks already exist for a given source_type."""
+    from sqlalchemy import func, select
+
+    from app.database import async_session
+    from app.models import KnowledgeChunk
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(KnowledgeChunk)
+            .where(KnowledgeChunk.source_type == source_type)
+        )
+        return int(result.scalar_one())
+
+
+async def _delete_chunks(source_type: str) -> int:
+    """Remove every chunk for a source_type so a re-sync replaces rather than duplicates."""
+    from sqlalchemy import delete
+
+    from app.database import async_session
+    from app.models import KnowledgeChunk
+
+    async with async_session() as session:
+        result = await session.execute(
+            delete(KnowledgeChunk).where(KnowledgeChunk.source_type == source_type)
+        )
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
 @router.post("/sync")
-async def sync_notion_to_pgvector(database: KnowledgeDatabase = "all"):
+async def sync_notion_to_pgvector(
+    database: KnowledgeDatabase = "all",
+    replace: bool = False,
+):
     """Sync Notion databases to pgvector for semantic search.
 
     Run this after adding new content to Notion, or on a schedule.
+
+    `sync_database_to_pgvector` only ever INSERTs -- `knowledge_chunks` has no
+    unique constraint and the sync writes `source_id = NULL`, so it cannot
+    upsert. Re-running it unguarded duplicates every chunk, which then wastes
+    the caller's top-k budget on identical rows. So a source_type that already
+    holds chunks is skipped unless `replace=true`, which deletes that
+    source_type's existing chunks first and re-syncs from scratch.
     """
     settings = get_settings()
     if not settings.notion_api_key:
         raise HTTPException(status_code=503, detail="Notion not configured")
 
     total = 0
-    synced = {}
+    synced: dict[str, object] = {}
 
     db_map = {
         "transcripts": (settings.notion_transcripts_db, "transcript"),
@@ -160,8 +203,17 @@ async def sync_notion_to_pgvector(database: KnowledgeDatabase = "all"):
             synced[name] = "skipped (not configured)"
             continue
 
+        existing = await _count_chunks(source_type)
+        if existing and not replace:
+            synced[name] = (
+                f"skipped ({existing} chunks already indexed; "
+                f"re-run with replace=true to rebuild and avoid duplicates)"
+            )
+            continue
+
+        deleted = await _delete_chunks(source_type) if existing else 0
         count = await sync_database_to_pgvector(db_id, source_type)
-        synced[name] = count
+        synced[name] = {"chunks_created": count, "chunks_deleted": deleted}
         total += count
 
     return {"total_chunks": total, "databases": synced}

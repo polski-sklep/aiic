@@ -1,3 +1,12 @@
+-- backend/init.sql
+--
+-- Postgres runs this ONLY when initialising an empty data directory. It will
+-- never run again against the live volume. It is a fresh-volume fast path;
+-- `backend/migrations/` is authoritative and runs on every volume.
+--
+-- Any schema change here MUST also ship as an idempotent numbered migration in
+-- backend/migrations/ in the same commit. See backend/migrations/README.md.
+
 -- Enable extensions
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -157,6 +166,7 @@ CREATE TABLE calibration_records (
     alpha_vs_btc_30d_pct NUMERIC(10,2),
     alpha_vs_btc_90d_pct NUMERIC(10,2),
     alpha_vs_btc_180d_pct NUMERIC(10,2),
+    outcome_notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

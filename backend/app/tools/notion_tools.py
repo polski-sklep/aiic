@@ -2,16 +2,14 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 from app.config import get_settings
 from app.llm import ToolDefinition
 from app.tools.notion import NotionPageContent, NotionSearchResult, get_page_content, search_notion
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.utils.types import ToolArguments
 from app.utils import KnowledgeDatabase
-
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 
 class SearchNotesResult(TypedDict):
@@ -96,7 +94,7 @@ async def read_note(args: ToolArguments) -> ReadNoteResult | ToolError:
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="search_notes",

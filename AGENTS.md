@@ -8,9 +8,9 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 
 | Agent | Branch | Responsibility | Status |
 |---|---|---|---|
-| Architecture | `agent/architecture` | Tree-4 triage, circular-dependency fix, ADRs | **In progress** |
+| Architecture | `agent/architecture` | Tree-4 triage, circular-dependency fix, ADRs | Integrated |
 | Calibration | `agent/calibration` | Checkpoint date bug, historical pricing, backfill | **In progress** |
-| Persistence | `agent/persistence` | Report persistence, evaluation↔calibration linkage, migrations | **In progress** |
+| Persistence | `agent/persistence` | Report persistence, evaluation↔calibration linkage, migrations | Integrated |
 | Personas | `agent/personas` | Missing `tech_infra_analyst` persona, Risk Officer redesign | **In progress** |
 | Retrospective | `agent/retrospective` | 67-day qualitative performance retrospective | **In progress** |
 | DevOps | `agent/devops` | CI, local dev environment, dependency vulnerabilities | **In progress** |
@@ -18,6 +18,7 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | Security | `agent/security` | Auth, injection, secrets, XSS review | **In progress** |
 | UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | **In progress** |
 | Retrieval | `agent/retrieval` | Keyword vs semantic retrieval evaluation, pgvector wiring | **In progress** |
+| Core | `agent/core` | Score sequencing, chair truncation, signposts ledger, migration autorun | **In progress** |
 
 ## Ownership
 

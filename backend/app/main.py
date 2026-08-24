@@ -28,6 +28,30 @@ async def lifespan(app: FastAPI):
     logger.info(f"Claude API configured: {bool(settings.anthropic_api_key)}")
     logger.info(f"OpenAI API configured: {bool(settings.openai_api_key)}")
 
+    # Apply schema migrations before serving.
+    #
+    # `backend/init.sql` runs only on an empty data directory, so the live
+    # volume — weeks of uptime, and the only copy of the calibration ledger —
+    # never sees a new column added there. Until now the only way to converge it
+    # was the manual `docker compose exec backend python -m app.database`, which
+    # is a step a deploy can forget, and forgetting it means the code expects
+    # columns the database does not have.
+    #
+    # Deliberately not fatal. `run_migrations()` never raises and reports
+    # failures in its return value — verified here against an unreachable
+    # database, a malformed DSN, invalid SQL, duplicate versions and checksum
+    # drift, all of which return ok=False rather than propagating. It also takes
+    # a Postgres advisory lock, verified to block while another connection holds
+    # it, so two backends starting together serialise instead of racing. A
+    # migration runner that can stop the service from booting is worse than the
+    # manual command it replaces: a schema problem would become an outage, and
+    # the API surface that does not touch the database would go down with it.
+    from app.database import run_migrations
+
+    result = await run_migrations()
+    if not result["ok"]:
+        logger.error("Schema migrations reported errors: %s", result["errors"])
+
     # Pre-initialize tool registry
     from app.tools import get_tool_registry
 

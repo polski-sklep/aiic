@@ -748,7 +748,7 @@ class Orchestrator:
                     project_name,
                 )
 
-            await record_calibration(
+            record_id = await record_calibration(
                 evaluation_id=evaluation_id,
                 project_name=project_name,
                 ticker=str(project_metadata.get("ticker", "") or ""),
@@ -759,6 +759,24 @@ class Orchestrator:
                 chair_confidence=chair_confidence,
                 vetoed=bool(vetoed),
             )
+
+            # The Chair's falsification criteria. record_calibration's signature
+            # is frozen (docs/CONTRACTS.md 3.1), so these land as a follow-up
+            # update against the row it just created. Without them a WATCH is
+            # unfalsifiable: the committee states what would change its mind and
+            # the ledger discards it, which is most of why four of six live
+            # records cannot be graded.
+            if record_id:
+                from app.knowledge.calibration import record_signposts
+
+                signposts = result.get("signposts") or []
+                review_date = result.get("review_date") or None
+                if signposts or review_date:
+                    await record_signposts(
+                        record_id=record_id,
+                        signposts=[str(s) for s in signposts] if signposts else None,
+                        review_date=str(review_date) if review_date else None,
+                    )
         except Exception as exc:
             logger.warning("Calibration capture failed (non-fatal): %s", exc)
 

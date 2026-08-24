@@ -1,0 +1,191 @@
+# Tooling configuration for the AIIC committee orchestrator.
+#
+# This project is not a packaged distribution — the backend is run as an
+# application inside a container, not installed. There is deliberately no
+# [project] table and no [build-system]: this file exists purely so that CI,
+# the Makefile and an editor all read the same lint / type / test settings.
+#
+# Target interpreter is 3.12 everywhere, because 3.12 is what the container
+# runs and the container is the only trustworthy runtime (CONTRACTS.md §5).
+# The Mac's host Python is 3.14 — do not let an editor infer that.
+#
+# GOVERNING PRINCIPLE FOR THE BASELINE
+# -----------------------------------
+# The first CI run must be green. A build that is red on 86 lint findings and
+# 365 type errors it inherited teaches everyone to ignore the build, and then
+# the first *real* regression is invisible. So both tools are configured as a
+# RATCHET: the current state is pinned as the floor via explicit, itemised debt
+# ledgers below, and anything new fails. Entries come off the ledgers as their
+# owning branch fixes them. Never add one back.
+
+# ---------------------------------------------------------------------------
+# ruff — lint
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "backend/migrations",   # plain SQL, owned by agent/persistence
+]
+
+[tool.ruff.lint]
+# A small, high-signal blocking set. These are the families that catch bugs
+# rather than style:
+#
+#   E9  syntax / IO errors — a file ruff cannot even parse
+#   F   pyflakes: undefined names, unused imports, dead assignments. This is
+#       the family that statically catches part of the "compiles but
+#       ImportErrors" class of failure (handoff §14.4).
+#   B   flake8-bugbear: mutable default args, loop-variable capture, etc.
+#
+# NOT enabled here, deliberately:
+#   I   (import sorting)  — 31 findings, i.e. most of the tree
+#   UP  (pyupgrade)       — 40 findings, mostly `timezone.utc` -> `UTC`
+# Both are pure style, both are autofixable, and both would rewrite files owned
+# by seven other branches that are being edited concurrently right now. They
+# run in the advisory `lint-advisory` CI job instead, and should be turned on
+# here in one dedicated sweep once the parallel branches have merged.
+select = ["E9", "F", "B"]
+
+ignore = [
+    # `raise ... from err`. The API layer deliberately raises bare
+    # HTTPExceptions from except blocks, and CONTRACTS.md §3.4 forbids putting
+    # the original exception text into `detail` anyway.
+    "B904",
+    # `zip()` without explicit strict=. Worth enabling later; the two current
+    # call sites are same-length by construction.
+    "B905",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008 fires on every FastAPI `Depends(...)`/`Query(...)` default. That is the
+# framework's documented calling convention, not a bug. Without this the rule
+# reports 8 false positives and nothing true.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.File",
+    "fastapi.Form",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# --- DEBT LEDGER (ruff), baselined 24 Aug 2026 -----------------------------
+# Seven pre-existing findings in files owned by other branches. Each line is
+# one real finding, not a blanket exemption. Fix the code and delete the line.
+"backend/app/agents/base.py"      = ["B007"]  # unused loop var `round_num` L164
+"backend/app/tools/coingecko.py"  = ["B007"]  # unused loop var `attempt` L85
+"backend/app/tools/notion.py"     = ["F401"]  # unused `typing.TYPE_CHECKING` L38
+"backend/app/api/reports.py"      = ["F541"]  # f-string w/o placeholders L205
+"telegram_bot.py"                 = ["F401", "F841"]  # unused asyncio; 2 dead locals
+# --- end ledger ------------------------------------------------------------
+
+# Tests are being written concurrently by agent/qa and agent/calibration.
+# Import-star, redefinition and pre-import sys.path juggling are normal in test
+# files and in an e2e harness; do not block their branches on it.
+"backend/tests/**" = ["F401", "F811", "E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# mypy — type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["backend/app"]
+mypy_path = "backend"
+explicit_package_bases = true
+namespace_packages = true
+
+# --- What is on ---
+warn_redundant_casts = true
+no_implicit_optional = true
+strict_equality = true
+
+# --- What is off, and why ---
+# ~6,400 lines written without a type checker. `disallow_untyped_defs` alone
+# produces hundreds of errors across files owned by seven branches. Check what
+# IS annotated; do not demand annotations that do not exist yet.
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_unused_ignores = false   # branches merge concurrently; churn not worth it
+warn_unreachable = false      # noisy against pydantic / SQLAlchemy descriptors
+
+# notion-client, pgvector, arq, python-jose and tiktoken ship no stubs.
+ignore_missing_imports = true
+
+# --- DEBT LEDGER (mypy), baselined 24 Aug 2026 -----------------------------
+# 365 errors in 22 of 47 modules. 25 modules are already clean and ARE checked
+# for real; these 22 are pinned. Two root causes dominate:
+#
+#  * 227 [union-attr] — indexing the recursive `JSONValue` alias from
+#    app/utils/types.py without narrowing. Owned by agent/architecture.
+#  * 18 [assignment] + 60 [arg-type] — SQLAlchemy 1.x-style `Column[...]`
+#    declarative models. Fixing properly means either the sqlalchemy mypy
+#    plugin or `Mapped[...]` annotations in app/models/__init__.py, owned by
+#    agent/persistence.
+#
+# THE RATCHET: delete a module from this list once it type-checks. Adding one
+# back is a regression and should be argued for in review, not done silently.
+[[tool.mypy.overrides]]
+module = [
+    "app.agents.base",
+    "app.agents.chair",
+    "app.agents.guardrails",
+    "app.agents.orchestrator",
+    "app.agents.ray",
+    "app.agents.reconciliation",
+    "app.agents.report_writer",
+    "app.agents.technical_analyst",
+    "app.api.evaluate",
+    "app.api.knowledge",
+    "app.api.reports",
+    "app.knowledge",
+    "app.llm.claude",
+    "app.llm.openai_provider",
+    "app.tools.binance",
+    "app.tools.coingecko",
+    "app.tools.defillama",
+    "app.tools.notion",
+    "app.tools.notion_tools",
+    "app.tools.twitter",
+    "app.tools.web_search",
+    "app.utils.citations",
+    # --- added 24 Aug 2026 when integration merged. THREE REAL FINDINGS,
+    # reported to their owners rather than silently absorbed:
+    #   knowledge/calibration.py:572  float(x) where x is `float | None`
+    #                                 -> TypeError if the price is missing.
+    #                                 Owner: agent/calibration.
+    #   tools/semantic.py:59          int(x) on an unnarrowed JSONValue union.
+    #   tools/semantic.py:147         registry.register() gets a Callable whose
+    #                                 return type is not ToolFunc — the tool
+    #                                 contract and the implementation disagree.
+    #                                 Owner: agent/architecture / agent/retrieval.
+    "app.knowledge.calibration",
+    "app.tools.semantic",
+]
+ignore_errors = true
+# --- end ledger ------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    # Anything that costs money or needs the network. Excluded in CI: CI has
+    # no ANTHROPIC_API_KEY and must never spend one.
+    "live: hits a real external API (LLM, CoinGecko, Notion, Brave). Not run in CI.",
+    "db: requires a live Postgres. Run via `make test-db`, not the default CI job.",
+]

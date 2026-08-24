@@ -1,0 +1,21 @@
+# Development / CI dependencies.
+# Installed on top of requirements.txt by the `dev` stage of backend/Dockerfile.
+# Never installed into the production image — see the stage ordering in the
+# Dockerfile (`runtime` is the last stage, so a bare `docker build` is prod).
+
+# Lint + format
+ruff==0.14.4
+
+# Type checking
+mypy==1.18.2
+
+# Types for third-party packages that ship no inline annotations
+types-python-dateutil==2.9.0.20250822
+
+# Test runner
+pytest==8.4.2
+pytest-asyncio==1.2.0
+anyio==4.11.0
+
+# Dependency vulnerability audit (used by `make audit` and the CI security job)
+pip-audit==2.9.0

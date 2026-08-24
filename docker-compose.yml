@@ -1,28 +1,59 @@
+# AIIC committee orchestrator.
+#
+# Validate this file with the tool that consumes it, never with compileall:
+#     docker compose config -q --no-interpolate     # syntax + schema, no secrets
+#     docker compose config -q                      # + interpolation, needs .env
+# Handoff §14.1: two indentation defects survived here for weeks because the
+# validation used did not read YAML.
+#
+# Every host-facing knob below is `${VAR:-default}` where the DEFAULT REPRODUCES
+# THE PRODUCTION VALUE EXACTLY. Deploying this file to the VPS with an unchanged
+# .env changes nothing about container names or the backend's published port.
+# The variables exist so parallel local stacks stop colliding on 5432/6379/8100
+# and on container names, which every agent was working around with a private
+# gitignored override.
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: committee-postgres
+    container_name: ${CONTAINER_PREFIX:-committee}-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: committee
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: committee
     ports:
-      - "5432:5432"
+      # SEC-02 (High). Was "5432:5432", i.e. 0.0.0.0. `ufw` is INACTIVE on the
+      # VPS and the host INPUT policy is ACCEPT with no drop rules, so the only
+      # thing keeping this database off the internet is an external Hetzner
+      # Cloud Firewall with no host-level fallback. Nothing outside the compose
+      # network needs Postgres — the backend reaches it as `postgres:5432` on
+      # the internal network — so bind it to loopback and take it out of the
+      # exposed set entirely. Override POSTGRES_BIND_ADDR only with a reason.
+      - "${POSTGRES_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
+      # NAMED volume, deliberately external to the repo directory. This is why
+      # re-cloning the repo did not destroy the database (handoff §7.2).
+      # Do not convert it to a bind mount.
       - pgdata:/var/lib/postgresql/data
+      # Runs ONLY on an empty data directory. On the live volume it has never
+      # run and never will — schema changes must ship as a migration too
+      # (CONTRACTS.md §3.3, handoff §9.4).
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U committee"]
       interval: 5s
       timeout: 5s
       retries: 5
+
   redis:
     image: redis:7-alpine
-    container_name: committee-redis
+    container_name: ${CONTAINER_PREFIX:-committee}-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # SEC-02 (High). Was "6379:6379". This Redis has NO password. Same
+      # reasoning as Postgres: nothing off-box needs it.
+      - "${REDIS_BIND_ADDR:-127.0.0.1}:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -30,14 +61,24 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: committee-backend
+      # Explicit. backend/Dockerfile keeps `runtime` as its last stage so this
+      # is also what a bare build produces, but naming it means a future stage
+      # reorder cannot silently ship the dev image to production.
+      target: runtime
+    container_name: ${CONTAINER_PREFIX:-committee}-backend
     restart: unless-stopped
     ports:
-      - "8100:8100"
+      # Left on 0.0.0.0 by default: the API is the service that actually has to
+      # be reachable (browser reports, telegram_bot.py), and narrowing it is a
+      # deployment decision, not a file default. SEC-02 recommends binding this
+      # to the Tailscale address on the VPS — set BACKEND_BIND_ADDR=100.95.239.105
+      # in the VPS .env. See docs/operations.md.
+      - "${BACKEND_BIND_ADDR:-0.0.0.0}:${BACKEND_HOST_PORT:-8100}:8100"
     env_file:
       - .env
     environment:
@@ -50,6 +91,13 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/app:/app/app
+      # Deploy correctness. `backend/app` was the only mount, so a migration
+      # added by `git pull` was NOT delivered — it is baked in at image build
+      # time, and CONTRACTS.md §4.7 says `git pull --ff-only` is the entire
+      # deploy. Read-only: the runner only reads these files, and an applied
+      # migration is immutable (checksum-verified).
+      - ./backend/migrations:/app/migrations:ro
+
 volumes:
   pgdata:
   redisdata:

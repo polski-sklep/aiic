@@ -58,6 +58,16 @@ async def lifespan(app: FastAPI):
     registry = get_tool_registry()
     logger.info(f"Tools loaded: {registry.tool_names}")
 
+    # tool_names is static class data, so an unresolvable name is a programming
+    # error that can be caught here rather than surfacing as an agent quietly
+    # running with one fewer capability for every evaluation from now on
+    # (QA-026). Logged, not fatal: one mistyped tool should not take the service
+    # down, and every other agent still works.
+    from app.tools.registry import validate_agent_tool_names
+
+    for problem in validate_agent_tool_names():
+        logger.error("Tool wiring: %s", problem)
+
     yield
 
     logger.info("Committee Orchestrator shutting down")

@@ -64,6 +64,46 @@ class ToolRegistry:
         return list(self._tools.keys())
 
 
+def validate_agent_tool_names() -> list[str]:
+    """Check that every agent's declared ``tool_names`` actually resolves.
+
+    ``tool_names`` is static class data, so a typo or a renamed tool is knowable
+    at startup rather than discovered mid-evaluation. Raising from
+    ``get_definitions`` would kill an agent part-way through a paid run for what
+    is really a programming error; returning silently loses it entirely
+    (QA-026). Checking here gets both: deterministic, loud, and before any
+    money is spent.
+
+    Returns a list of human-readable problems, empty when everything resolves.
+    """
+    from app.agents.orchestrator import Orchestrator
+
+    registry = get_tool_registry()
+    known = set(registry.tool_names)
+    orchestrator = Orchestrator()
+
+    agents = [
+        *orchestrator.data_agents,
+        orchestrator.maturation,
+        orchestrator.devils_advocate,
+        orchestrator.risk_officer,
+        orchestrator.portfolio_manager,
+        orchestrator.report_writer,
+        orchestrator.chair,
+        orchestrator.ray,
+    ]
+
+    problems: list[str] = []
+    for agent in agents:
+        declared = set(agent.tool_names) | set(agent._base_tools)
+        missing = sorted(declared - known)
+        if missing:
+            problems.append(
+                f"{agent.name} declares unregistered tool(s): {', '.join(missing)}"
+            )
+    return problems
+
+
 _registry: ToolRegistry | None = None
 
 

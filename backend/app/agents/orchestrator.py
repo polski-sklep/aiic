@@ -8,7 +8,7 @@ Step 5: Risk + Stress - Risk Officer with VETO POWER
 Step 5b: Devil's Advocate - contrarian challenge
 Step 6: Portfolio Assessment - fit, sizing, correlation
 Step 7: Report + Thesis Assembly - 24-section structured report
-Post:  Ray Munger - independent contrarian Sonnet pass
+Post:  Ray Dalio - independent contrarian Sonnet pass
 Step 8: Committee Decision - Chair makes final BUY/PASS/WATCH/VETO
 """
 from __future__ import annotations
@@ -36,11 +36,106 @@ from app.agents.synthesis_agents import DevilsAdvocate, MaturationScorer, Portfo
 from app.agents.technical_analyst import TechnicalAnalyst
 from app.agents.tokenomics import TokenomicsAnalyst
 from app.utils.citations import build_source_catalog
-from app.utils.types import JSONObject
+from app.utils.types import JSONObject, ScoreReconciliation
 
 logger = logging.getLogger(__name__)
 
 StatusCallback = Callable[[str, str, JSONObject], Awaitable[None]] | None
+
+# Recommendation bands for the weighted committee score (AIIC_HANDOFF.md §3):
+#   >= 75  INVEST   ·   60-74  WATCH   ·   < 60  PASS
+#
+# Defined once, here, because two call sites need them: `_simple_rec`, which
+# runs only on the report-failure fallback branch, and `score_band`, which
+# classifies the weighted score so a contradiction with the Chair's decision
+# can be detected. Two copies of a threshold is how they drift.
+INVEST_SCORE_THRESHOLD = 75.0
+WATCH_SCORE_THRESHOLD = 60.0
+
+# The decision string each band would imply if the score alone decided. It does
+# not — the Chair decides — but the mapping is what makes "the score and the
+# decision disagree" a statement with a truth value.
+_BAND_DECISION: dict[str, str] = {"INVEST": "BUY", "WATCH": "WATCH", "PASS": "PASS"}
+
+# Decisions that can be compared against a band. VETO is excluded because a veto
+# is imposed by the Risk Officer and overrides the Chair unconditionally, so a
+# VETO/INVEST pair is not the Chair contradicting the score. INSUFFICIENT_DATA
+# is excluded because it is the absence of a decision.
+_COMPARABLE_DECISIONS = frozenset(_BAND_DECISION.values())
+
+
+def score_band(score: float | None) -> str | None:
+    """Which recommendation band a weighted score falls in, or None."""
+    if score is None:
+        return None
+    if score >= INVEST_SCORE_THRESHOLD:
+        return "INVEST"
+    if score >= WATCH_SCORE_THRESHOLD:
+        return "WATCH"
+    return "PASS"
+
+
+def build_score_reconciliation(
+    overall: float | None,
+    decision: str,
+    chair_confidence: str,
+    vetoed: bool,
+) -> ScoreReconciliation:
+    """Compare the weighted score's band against the Chair's decision.
+
+    Pure and side-effect free. It records the disagreement; it does not resolve
+    it. Nothing here feeds back into `decision`, into `_calc_score`, or into any
+    prompt — per PROJECT_DECISIONS.md D6 the choice of what to *do* about the
+    incoherence is Jacob's, and this function exists to make the rate of it
+    countable so that choice can be made on evidence rather than on the single
+    Aave row (docs/adr/0002-score-chair-coherence.md).
+    """
+    band = score_band(overall)
+    implied = _BAND_DECISION.get(band) if band else None
+    thresholds = {"invest": INVEST_SCORE_THRESHOLD, "watch": WATCH_SCORE_THRESHOLD}
+
+    if overall is None:
+        comparable, conflict = False, False
+        detail = "No weighted score was computable, so there is nothing to compare."
+    elif vetoed:
+        comparable, conflict = False, False
+        detail = (
+            f"Risk Officer veto overrides the Chair, so the {band} band "
+            f"({overall}) is not comparable against the recorded VETO."
+        )
+    elif decision not in _COMPARABLE_DECISIONS:
+        comparable, conflict = False, False
+        detail = (
+            f"Decision {decision!r} is not one of BUY/WATCH/PASS, so the "
+            f"{band} band ({overall}) has nothing to disagree with."
+        )
+    else:
+        comparable = True
+        conflict = implied != decision
+        if conflict:
+            detail = (
+                f"Weighted score {overall} falls in the {band} band, which "
+                f"implies {implied}, but the Chair returned {decision} at "
+                f"{chair_confidence} conviction."
+            )
+        else:
+            detail = (
+                f"Weighted score {overall} falls in the {band} band and the "
+                f"Chair returned {decision}; they agree."
+            )
+
+    return {
+        "overall_score": overall,
+        "score_band": band,
+        "band_implied_decision": implied,
+        "chair_decision": decision,
+        "chair_confidence": chair_confidence,
+        "comparable": comparable,
+        "conflict": conflict,
+        "detail": detail,
+        "thresholds": thresholds,
+    }
+
 
 
 class Orchestrator:
@@ -221,6 +316,30 @@ class Orchestrator:
         agent_results[self.ray.name] = ray
         refresh_context()
 
+        # The weighted score is computed HERE, before the Chair runs.
+        #
+        # It used to be computed after the Chair had already decided, which made
+        # a score/decision contradiction literally undetectable: at the moment
+        # the Chair was prompted the number it might contradict did not exist
+        # yet (docs/adr/0002-score-chair-coherence.md).
+        #
+        # Moving it cannot change its value. `_calc_score` reads only the ten
+        # names in its `weights` table and `scores` filters on
+        # `exclude_from_scores`; `committee_chair` is in that exclusion set and
+        # is absent from `weights`, so whether the Chair's result is present in
+        # `agent_results` at the time of the call is irrelevant to both.
+        #
+        # D6 boundary: the score is NOT placed in `chair_context`. The Chair is
+        # told nothing new, decides exactly what it decided before, and the
+        # disagreement is recorded rather than prevented.
+        exclude_from_scores = {"report_writer", "ray_dalio", "committee_chair", "technical_analyst"}
+        scores = {
+            name: result.score
+            for name, result in agent_results.items()
+            if result.score is not None and name not in exclude_from_scores
+        }
+        overall = self._calc_score(agent_results)
+
         if on_status:
             await on_status("step", "8_committee_decision", {})
         chair_context = dict(context)
@@ -232,16 +351,16 @@ class Orchestrator:
         chair = await self._run_agent(self.chair, chair_context, on_status)
         agent_results[self.chair.name] = chair
 
-        exclude_from_scores = {"report_writer", "ray_dalio", "committee_chair", "technical_analyst"}
-        scores = {
-            name: result.score
-            for name, result in agent_results.items()
-            if result.score is not None and name not in exclude_from_scores
-        }
-        overall = self._calc_score(agent_results)
         decision = chair.output.get("decision", "VETO" if vetoed else "INSUFFICIENT_DATA")
         if vetoed:
             decision = "VETO"
+
+        chair_confidence = str(chair.output.get("conviction_level", "unknown") or "unknown")
+        reconciliation_check = build_score_reconciliation(
+            overall, str(decision), chair_confidence, bool(vetoed)
+        )
+        if reconciliation_check["conflict"]:
+            logger.warning("SCORE/DECISION CONFLICT for %s: %s", project_name, reconciliation_check["detail"])
 
         result = {
             "project_name": project_name,
@@ -260,6 +379,12 @@ class Orchestrator:
             "ray_verdict": ray.output.get("rays_verdict", ""),
             "draft_report": draft_report,
             "signposts": chair.output.get("signposts", []),
+            "review_date": chair.output.get("review_date", ""),
+            # Written verbatim into reports.content by api/evaluate._persist_report,
+            # so the conflict rate is queryable:
+            #   SELECT content->'score_reconciliation'->>'conflict', count(*)
+            #     FROM reports GROUP BY 1;
+            "score_reconciliation": reconciliation_check,
         }
 
         project_metadata = context.get("project_info", {})
@@ -283,7 +408,7 @@ class Orchestrator:
                 category=str(project_metadata.get("category", "") or ""),
                 recommendation=decision,
                 overall_score=overall,
-                chair_confidence=str(chair.output.get("conviction_level", "unknown") or "unknown"),
+                chair_confidence=chair_confidence,
                 vetoed=bool(vetoed),
             )
         except Exception as exc:
@@ -348,10 +473,14 @@ class Orchestrator:
         return round(weighted_sum / total_weight, 1) if total_weight > 0 else None
 
     def _simple_rec(self, scores: dict[str, float]) -> str:
+        """Fallback recommendation used only when the Report Writer emitted no
+        `sections` key. Unweighted mean over a different agent set than
+        `_calc_score`'s weighted one — deliberately left as it was; only the
+        hardcoded 75/60 literals were replaced by the shared constants."""
         if not scores:
             return "INSUFFICIENT_DATA"
-        average = sum(scores.values()) / len(scores)
-        return "BUY" if average >= 75 else ("WATCH" if average >= 60 else "PASS")
+        band = score_band(sum(scores.values()) / len(scores))
+        return _BAND_DECISION[band] if band else "INSUFFICIENT_DATA"
 
     def _ser(self, result: AgentResult) -> JSONObject:
         return {

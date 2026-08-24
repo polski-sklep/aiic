@@ -531,14 +531,16 @@ def _render_table(rows: list[str], fn_ids: frozenset[int], caption: str = "") ->
     return "".join(parts)
 
 
-def _render_prose(raw: Any, fn_ids: frozenset[int]) -> str:
+def _render_prose(raw: Any, fn_ids: frozenset[int], heading_level: int = 3) -> str:
     """Render a block of untrusted model prose.
 
     Handles the small markdown subset models actually emit: paragraphs, lists,
     pipe tables, blockquotes, rules and headings. Headings inside a section
-    body are demoted to <h4> so model output cannot forge a top-level heading
-    and corrupt the document outline.
+    body are demoted to `heading_level` (h3 directly under a section's h2, h4
+    when already nested) so model output cannot forge a top-level heading or
+    skip a level and corrupt the document outline.
     """
+    hl = min(max(int(heading_level), 3), 6)
     text = "" if raw is None else str(raw)
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
@@ -616,7 +618,7 @@ def _render_prose(raw: Any, fn_ids: frozenset[int]) -> str:
         m_h = _HEADING_RE.match(line)
         if m_h:
             flush_all()
-            out.append(f'<h4>{_inline(m_h.group(2), fn_ids)}</h4>')
+            out.append(f"<h{hl}>{_inline(m_h.group(2), fn_ids)}</h{hl}>")
             continue
 
         flush_block()
@@ -626,12 +628,14 @@ def _render_prose(raw: Any, fn_ids: frozenset[int]) -> str:
     return "".join(out) or f'<p class="muted">{_esc("No content provided.")}</p>'
 
 
-def _render_value(value: Any, fn_ids: frozenset[int], caption: str = "") -> str:
+def _render_value(
+    value: Any, fn_ids: frozenset[int], caption: str = "", heading_level: int = 3
+) -> str:
     """Render a section body that may be prose, a list, or a mapping."""
     if isinstance(value, dict):
         rows = "".join(
             f"<tr><th scope=\"row\">{_inline(str(k).replace('_', ' ').title(), fn_ids)}</th>"
-            f"<td>{_render_value(v, fn_ids)}</td></tr>"
+            f"<td>{_render_value(v, fn_ids, heading_level=heading_level)}</td></tr>"
             for k, v in value.items()
         )
         return (
@@ -641,9 +645,16 @@ def _render_value(value: Any, fn_ids: frozenset[int], caption: str = "") -> str:
     if isinstance(value, list):
         if not value:
             return ""
-        return "<ul>" + "".join(f"<li>{_render_value(v, fn_ids)}</li>" for v in value) + "</ul>"
+        return (
+            "<ul>"
+            + "".join(
+                f"<li>{_render_value(v, fn_ids, heading_level=heading_level)}</li>"
+                for v in value
+            )
+            + "</ul>"
+        )
     if isinstance(value, str):
-        return _render_prose(value, fn_ids)
+        return _render_prose(value, fn_ids, heading_level)
     return _inline(value, fn_ids)
 
 
@@ -890,7 +901,10 @@ def _render_report_html(parts: ReportParts) -> str:
             _render_value(parts.ray["summary"], fn_ids),
         ]
         for label, val in parts.ray["fields"]:
-            inner.append(f"<h3>{_esc(label)}</h3>{_render_value(val, fn_ids)}")
+            inner.append(
+                f"<h3>{_esc(label)}</h3>"
+                + _render_value(val, fn_ids, heading_level=4)
+            )
         section("rays-review", "Ray's Independent Review", "".join(inner), cls="ray")
 
     if parts.signposts:

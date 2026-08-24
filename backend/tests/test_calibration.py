@@ -999,5 +999,50 @@ class TestPriceCache(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(bf.DEFAULT_MIN_INTERVAL_SECONDS, 15)
 
 
+class TestPriceLookupInvariant(unittest.TestCase):
+    def test_found_without_a_price_is_rejected_at_construction(self):
+        # Otherwise it flows into float() and raises TypeError frames away.
+        with self.assertRaises(ValueError):
+            cal.PriceLookup("found")
+        with self.assertRaises(ValueError):
+            cal.PriceLookup("found", price=None)
+
+    def test_no_data_and_failed_may_have_no_price(self):
+        self.assertIsNone(cal.PriceLookup("no_data").price)
+        self.assertIsNone(cal.PriceLookup("failed", detail="429").price)
+
+    def test_found_with_a_price_is_fine(self):
+        self.assertEqual(cal.PriceLookup("found", price=0.0).price, 0.0)
+
+
+class TestNullEntryPrice(unittest.IsolatedAsyncioTestCase):
+    """The 11 June Aave INSUFFICIENT_DATA row has a NULL entry_price_usd.
+
+    The HTTP endpoint can be pointed at it, so this path is reachable in
+    production, not merely theoretical.
+    """
+
+    def _patch_record(self, row):
+        session = AsyncMock()
+        session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
+        ctx = AsyncMock()
+        ctx.__aenter__.return_value = session
+        ctx.__aexit__.return_value = False
+        return patch.object(cal, "async_session", lambda: ctx)
+
+    async def test_null_entry_price_is_a_clean_error_not_a_typeerror(self):
+        row = ("aave", None, 62779.0, datetime(2026, 6, 11, tzinfo=timezone.utc),
+               "Aave", "INSUFFICIENT_DATA")
+        fetch = AsyncMock()
+        with self._patch_record(row):
+            with patch.object(cal, "fetch_price_on", fetch):
+                result = await cal.compute_checkpoint(
+                    "89b57672-0000-4000-8000-000000000001", 30, today=date(2026, 8, 24)
+                )
+        self.assertEqual(result, {"error": "record has no entry_price_usd"})
+        # And it bails before spending a CoinGecko call.
+        fetch.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

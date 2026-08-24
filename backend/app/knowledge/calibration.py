@@ -245,6 +245,11 @@ class PriceLookup:
         market_cap: float | None = None,
         detail: str = "",
     ) -> None:
+        if status == "found" and price is None:
+            # The invariant every caller relies on. Enforced here rather than
+            # left as a convention, because a "found" with no price would flow
+            # straight into float() and raise TypeError several frames away.
+            raise ValueError("PriceLookup('found') requires a price")
         self.status = status
         self.price = price
         self.market_cap = market_cap
@@ -509,7 +514,11 @@ async def compute_checkpoint(
             )
         }
     if entry_price is None:
+        # Reachable: the 11 June Aave INSUFFICIENT_DATA row has a NULL
+        # entry_price_usd, and the HTTP endpoint will happily be pointed at it.
+        # Without this guard the float() below raises TypeError.
         return {"error": "record has no entry_price_usd"}
+    entry_price_value = float(entry_price)
 
     lookup = await fetch_price_on(coingecko_id, target_date)
     if lookup.failed:
@@ -523,7 +532,8 @@ async def compute_checkpoint(
             ),
             "fetch_failed": True,
         }
-    if not lookup.ok:
+    observed_price = lookup.price
+    if not lookup.ok or observed_price is None:
         return {
             "error": (
                 f"no historical price for {coingecko_id!r} on "
@@ -531,7 +541,6 @@ async def compute_checkpoint(
             ),
             "fetch_failed": False,
         }
-    observed_price = lookup.price
 
     # The BTC benchmark MUST come from the same date as the asset price.
     # Comparing a historical asset price against BTC spot would be a worse bug
@@ -555,7 +564,9 @@ async def compute_checkpoint(
             record_id,
         )
 
-    return_pct, alpha_pct = compute_returns(entry_price, observed_price, btc_entry, btc_observed)
+    return_pct, alpha_pct = compute_returns(
+        entry_price_value, observed_price, btc_entry, btc_observed
+    )
 
     return {
         "record_id": record_id,
@@ -568,7 +579,7 @@ async def compute_checkpoint(
         "observed_at": observation_timestamp(target_date),
         "is_reconstruction": target_date < today,
         "days_late": (today - target_date).days,
-        "entry_price": float(entry_price),
+        "entry_price": entry_price_value,
         "observed_price": float(observed_price),
         "btc_price_at_entry": float(btc_entry) if btc_entry is not None else None,
         "btc_price_observed": float(btc_observed) if btc_observed is not None else None,

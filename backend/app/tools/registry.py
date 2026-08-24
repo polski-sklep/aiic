@@ -28,8 +28,25 @@ class ToolRegistry:
         return self._definitions.get(name)
 
     def get_definitions(self, names: list[str] | None = None) -> list[ToolDefinition]:
+        """Definitions for ``names``, or every registered tool when None.
+
+        An unregistered name is skipped rather than raising — an agent must not
+        fail to run because one of its tools is unavailable. But it is logged
+        loudly: a typo in an agent's ``tool_names`` silently costs that agent a
+        capability for the lifetime of the process, with nothing anywhere
+        reporting it (QA-026).
+        """
         if names is None:
             return list(self._definitions.values())
+
+        unknown = [n for n in names if n not in self._definitions]
+        if unknown:
+            logger.warning(
+                "Requested tool(s) not registered and will be unavailable to the "
+                "caller: %s. Registered tools: %s",
+                ", ".join(sorted(unknown)),
+                ", ".join(sorted(self._definitions)),
+            )
         return [self._definitions[n] for n in names if n in self._definitions]
 
     async def execute(self, name: str, arguments: ToolArguments) -> ToolResult:

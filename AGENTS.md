@@ -11,14 +11,14 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | Architecture | `agent/architecture` | Tree-4 triage, circular-dependency fix, ADRs | Integrated |
 | Calibration | `agent/calibration` | Checkpoint date bug, historical pricing, backfill | Integrated (backfill dry-run pending) |
 | Persistence | `agent/persistence` | Report persistence, evaluation↔calibration linkage, migrations | Integrated |
-| Personas | `agent/personas` | Missing `tech_infra_analyst` persona, Risk Officer redesign | **In progress** |
-| Retrospective | `agent/retrospective` | 67-day qualitative performance retrospective | **In progress** |
+| Personas | `agent/personas` | Missing `tech_infra_analyst` persona, Risk Officer redesign | Integrated |
+| Retrospective | `agent/retrospective` | 67-day qualitative performance retrospective | Integrated |
 | DevOps | `agent/devops` | CI, local dev environment, dependency vulnerabilities | **In progress** |
-| QA | `agent/qa` | Independent test suite, adversarial testing | **In progress** |
+| QA | `agent/qa` | Independent test suite, adversarial testing | Integrated |
 | Security | `agent/security` | Auth, injection, secrets, XSS review | Integrated |
 | UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | **In progress** |
 | Retrieval | `agent/retrieval` | Keyword vs semantic retrieval evaluation, pgvector wiring | Integrated |
-| Falsifiability | `agent/falsifiability` | Dated risks, mandatory upside branch (retrospective R4, R7) | **In progress** |
+| Hardening | `agent/falsifiability` | QA defect closure, dated risks, upside branch | **In progress** |
 | Core | `agent/core` | Score sequencing, chair truncation, signposts ledger, migration autorun | **In progress** |
 
 ## Ownership

@@ -72,11 +72,11 @@ async def semantic_search(
         result = await session.execute(
             sql_text(f"""
                 SELECT id, content, source_type, metadata,
-                       1 - (embedding <=> :embedding::vector) as similarity
+                       1 - (embedding <=> CAST(:embedding AS vector)) as similarity
                 FROM {table}
                 WHERE embedding IS NOT NULL
-                  AND 1 - (embedding <=> :embedding::vector) > :threshold
-                ORDER BY embedding <=> :embedding::vector
+                  AND 1 - (embedding <=> CAST(:embedding AS vector)) > :threshold
+                ORDER BY embedding <=> CAST(:embedding AS vector)
                 LIMIT :limit
             """),
             {

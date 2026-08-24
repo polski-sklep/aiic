@@ -207,12 +207,17 @@ class RegistrationTest(unittest.TestCase):
 
 
 class LiveRegistryTest(unittest.TestCase):
-    """The eleven tools CONTRACTS section 3.6 declares live.
+    """The live tool roster.
 
-    Pure registration check -- constructs no clients and makes no calls.
+    CONTRACTS section 3.6 documents eleven. agent/retrieval added a twelfth,
+    ``semantic_search_notes``, and wired it into BaseAgent._base_tools so every
+    agent gets it -- this test is the thing that noticed, and CONTRACTS 3.6
+    still says eleven.
+
+    Pure registration check: constructs no clients and makes no calls.
     """
 
-    EXPECTED = {
+    CONTRACTED_ELEVEN = {
         "get_price",
         "get_token_info",
         "get_tvl",
@@ -225,11 +230,62 @@ class LiveRegistryTest(unittest.TestCase):
         "search_notes",
         "read_note",
     }
+    EXPECTED = CONTRACTED_ELEVEN | {"semantic_search_notes"}
 
-    def test_exactly_the_contracted_eleven_tools_are_registered(self):
+    def test_exactly_the_contracted_twelve_tools_are_registered(self):
         from app.tools import get_tool_registry
 
         self.assertEqual(set(get_tool_registry().tool_names), self.EXPECTED)
+
+    def test_the_original_eleven_all_survived_the_retrieval_merge(self):
+        from app.tools import get_tool_registry
+
+        self.assertTrue(self.CONTRACTED_ELEVEN <= set(get_tool_registry().tool_names))
+
+    def test_semantic_search_is_offered_to_every_agent(self):
+        """Handoff section 5: semantic_search existed but no agent could call it.
+
+        The fix is that it is in BaseAgent._base_tools, not merely registered.
+        Testing reachability, not the presence of the registration line.
+        """
+        from app.agents.base import BaseAgent
+        from app.tools import get_tool_registry
+
+        self.assertIn("semantic_search_notes", BaseAgent._base_tools)
+
+        class BareAgent(BaseAgent):
+            name = "bare"
+            tool_names: list[str] = []
+
+        offered = {d.name for d in BareAgent().get_tools()}
+        self.assertIn("semantic_search_notes", offered)
+        self.assertIn("search_notes", offered)
+
+    def test_tool_registry_satisfies_the_registrar_protocol(self):
+        """ADR 0001: tool modules depend on the Protocol, not the concrete class.
+
+        A structural check, so a signature drift on ToolRegistry.register that
+        silently breaks every tool module's type contract shows up here.
+        """
+        import inspect
+
+        from app.tools.contracts import ToolRegistrar
+
+        # ToolRegistrar is not @runtime_checkable, so isinstance() is unavailable.
+        # Compare the signature the tool modules are typed against with the one
+        # they will actually call.
+        self.assertEqual(
+            inspect.signature(ToolRegistry.register),
+            inspect.signature(ToolRegistrar.register),
+        )
+
+    def test_tool_argument_types_come_from_utils_not_the_tool_layer(self):
+        """ADR 0001: ToolArguments/ToolResult are not tool-layer concepts."""
+        from app.tools import contracts
+        from app.utils import types
+
+        self.assertIs(contracts.ToolArguments, types.ToolArguments)
+        self.assertIs(contracts.ToolResult, types.ToolResult)
 
     def test_unbuilt_integrations_are_not_registered(self):
         """CONTRACTS section 3.6: these are named in older docs and do not exist."""

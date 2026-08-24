@@ -2,7 +2,9 @@ from __future__ import annotations
 import os
 import json
 import logging
+import math
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -103,7 +105,7 @@ INSTRUCTIONS:
 5. Provide your assessment as structured JSON with the following fields:
    - "summary": A 2-3 sentence overview of your findings.
    - "key_findings": A list of the most important findings (strings).
-   - "risks": A list of identified risks (strings).
+   - "risks": A list of identified risks (strings). Where a risk has a date, a size and a direction, state all three: "1B XPL unlocks 28 Jul 2026, ~39.8% of float, bearish". An undated risk cannot be watched or graded. Where a risk genuinely resolves on no date, prefix it "Structural:". Never invent a date or a figure to satisfy this.
    - "opportunities": A list of identified opportunities (strings).
    - "data_quality": a JSON object with keys "verified_claims" (integer), "inferred_claims" (integer), "unknown_gaps" (list of strings for things you could not verify)
    - "score": Your score from 0-100 (integer) where 100 is best.
@@ -246,49 +248,177 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
             )
 
     def parse_output(self, raw_text: str) -> JSONObject:
-        """Parse the agent's raw text output into structured data."""
-        # Try to extract JSON from the response
-        text = raw_text.strip()
+        """Parse the agent's raw text output into structured data.
 
-        # Handle markdown code blocks
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
+        This is the untrusted-text boundary: everything a model writes becomes
+        structured data here, and the failure that matters is throwing away a
+        recoverable answer, not crashing.
+        """
+        if not isinstance(raw_text, str):
+            # QA-012: `raw_text.strip()` assumed str, so a provider returning
+            # structured content blocks took the whole agent down with an
+            # AttributeError instead of degrading to unparseable text.
+            return {
+                "summary": "",
+                "parse_error": "Could not parse structured JSON from agent output",
+                "raw_output": "",
+            }
 
-        try:
-            parsed = json.loads(text)
+        text = _strip_code_fence(raw_text.strip())
+
+        parsed, ok = _loads(text)
+        if ok:
             if isinstance(parsed, dict):
                 return cast(JSONObject, parsed)
-        except json.JSONDecodeError:
-            # Try to find JSON in the text
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
-                try:
-                    parsed = json.loads(text[start:end])
-                    if isinstance(parsed, dict):
-                        return cast(JSONObject, parsed)
-                except json.JSONDecodeError:
-                    pass
-
             return {
                 "summary": text[:500],
-                "parse_error": "Could not parse structured JSON from agent output",
+                "parse_error": "Agent output was valid JSON but not an object",
                 "raw_output": text,
             }
 
+        for candidate in _balanced_object_candidates(text):
+            recovered, recovered_ok = _loads(candidate)
+            if recovered_ok and isinstance(recovered, dict):
+                return cast(JSONObject, recovered)
+
         return {
             "summary": text[:500],
-            "parse_error": "Agent output was valid JSON but not an object",
+            "parse_error": "Could not parse structured JSON from agent output",
             "raw_output": text,
         }
 
     def extract_score(self, output: JSONObject) -> float | None:
-        """Extract numeric score from parsed output."""
+        """Extract a 0-100 numeric score from parsed output, or None.
+
+        QA-013: this was ``float(score)`` with no validation, and each value
+        rejected below is one the committee used to act on silently.
+
+        * ``NaN`` — json.loads accepts the bare literal and it propagates
+          through ``_calc_score``. Every threshold comparison against NaN is
+          False, so the committee lands on the bottom band: an unexplainable
+          rejection that looks like a considered verdict.
+        * ``1e400`` / ``"infinity"`` — both become inf and dominate the average.
+        * ``True`` / ``False`` — ``float(True)`` is 1.0, so a plausible
+          mis-generation became a maximally bearish vote.
+        * out of range — the prompt says 0-100 and nothing enforced it. A model
+          answering on a 0-1 scale, in basis points, or with a negative penalty
+          reweights the whole committee; 8500 against a 0.15 weight moves the
+          overall score by more than 1200 points.
+
+        Returning None puts the agent in the same bucket as one that produced no
+        score, and ``_calc_score`` already renormalises those out — so a bad
+        score costs its agent a vote rather than corrupting everyone else's.
+        """
         score = output.get("score")
-        if score is not None:
-            try:
-                return float(score)
-            except (ValueError, TypeError):
-                pass
-        return None
+        if score is None or isinstance(score, bool):
+            return None
+
+        try:
+            value = float(score)
+        except (ValueError, TypeError):
+            return None
+
+        if not math.isfinite(value):
+            logger.warning("[%s] Discarding non-finite score %r", self.name, score)
+            return None
+        if not 0.0 <= value <= 100.0:
+            logger.warning("[%s] Discarding out-of-range score %r (expected 0-100)", self.name, score)
+            return None
+        return value
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove a markdown fence, closed or not.
+
+    QA-010: this was ``lines[1:-1]``, which assumes a closing fence exists. When
+    a model is cut off by max_tokens the closing fence is missing, so the slice
+    ate the last line of real JSON — the closing brace — and the recovery path
+    then found no ``}`` at all. A fully recoverable payload was discarded.
+    """
+    if not text.startswith("```"):
+        return text
+
+    lines = text.split("\n")[1:]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip().startswith("```"):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _loads(text: str) -> tuple[object, bool]:
+    """``(value, parsed_ok)``. Never raises.
+
+    QA-012: only ``json.JSONDecodeError`` was caught. ``json.loads`` raises
+    ``RecursionError`` on deeply nested input, which escaped parse_output and
+    was caught by ``run``'s blanket handler — recording the agent as *errored*
+    rather than as having produced unparseable text, a different and more
+    alarming signal for the orchestrator.
+    """
+    try:
+        return json.loads(text), True
+    except (ValueError, TypeError, RecursionError):
+        return None, False
+
+
+#: How much text the brace scanner will walk. Recovery is a courtesy for a model
+#: that wrapped its JSON in prose, not a parser for arbitrary documents.
+_MAX_RECOVERY_SCAN = 1_000_000
+
+
+def _balanced_object_candidates(text: str, limit: int = 5) -> Iterator[str]:
+    """Yield balanced ``{...}`` substrings, first one first.
+
+    QA-011: recovery used to span ``find("{")`` to ``rfind("}")`` over the whole
+    text, so one brace anywhere outside the object widened the slice into
+    something that is not JSON. All three of these lost a complete, valid
+    assessment::
+
+        I will respond in the shape {field: value}: {"score": 85}
+        {"score": 85}\\nNote: I used {search_notes} for prior context.
+        {"score": 0, "summary": "example"}\\n{"score": 85, "summary": "real"}
+
+    Braces inside string literals are tracked, so a value like
+    ``"we use {curly} braces"`` cannot unbalance the scan.
+    """
+    window = text[:_MAX_RECOVERY_SCAN]
+    yielded = 0
+    index = 0
+
+    while yielded < limit:
+        start = window.find("{", index)
+        if start < 0:
+            return
+
+        depth = 0
+        in_string = False
+        escaped = False
+        closed_at = -1
+        for position in range(start, len(window)):
+            char = window[position]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    closed_at = position
+                    break
+
+        if closed_at < 0:
+            # Unbalanced from here to the end of the window; nothing that starts
+            # later can close either, since it would have to close inside this.
+            return
+
+        yield window[start : closed_at + 1]
+        yielded += 1
+        index = closed_at + 1

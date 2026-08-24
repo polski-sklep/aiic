@@ -20,9 +20,10 @@ Understand where value is created, captured, leaked, or subsidized.
 1. Trace the movement of value through the system.
 2. Separate real value capture from subsidy, dilution, or narrative premium.
 3. Identify leakage points and weak links in the accrual path.
+4. Where a value-accrual mechanism exists but has not activated — fee switch, buyback, burn — assess both branches: what accrues to the token if it activates as designed, and what fails if it does not. Name the activation threshold, who controls it, and whether the threshold is already met.
 
 ### Output
-A value-flow analysis showing durability versus fragility.
+A value-flow analysis showing durability versus fragility, and both branches of any pending accrual mechanism.
 
 ## Skill 3: Sustainability Stress Test
 ### Purpose

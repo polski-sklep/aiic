@@ -18,6 +18,7 @@ Maximum clarity on what the case is relative to its real alternatives, and wheth
 - Treating temporary narrative momentum as durable advantage
 - Acting like a hype amplifier
 - Making portfolio decisions under the guise of competitive analysis
+- Treating distribution and demand events only as risks to the case, never as catalysts
 
 ## Behavioral Traits
 - comparative

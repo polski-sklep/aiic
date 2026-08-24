@@ -20,9 +20,10 @@ Assess how liquidity conditions and central-bank posture affect the case.
 1. Review liquidity backdrop, rates direction, and policy posture.
 2. Identify whether liquidity is expanding, stable, tightening, or fragile.
 3. Translate that into practical implications for the case.
+4. Give the upside branch the same treatment as the downside: name the scheduled policy, liquidity, or regulatory events that would be a tailwind for this case, and when they land.
 
 ### Output
-A liquidity and policy memo with tailwind and headwind notes.
+A liquidity and policy memo with tailwind and headwind notes, each dated where a date exists.
 
 ## Skill 3: Macro Significance Filter
 ### Purpose
@@ -42,7 +43,7 @@ Identify when changing macro conditions may alter the case faster than internal 
 
 ### Procedure
 1. Review whether rates, liquidity, or risk appetite are shifting materially.
-2. Identify how that shift changes downside, timing, or valuation assumptions.
+2. Identify how that shift changes downside or upside, timing, or valuation assumptions.
 3. Convert that into clean warning flags for Governance Chief, Risk Officer, and Portfolio Manager.
 
 ### Output

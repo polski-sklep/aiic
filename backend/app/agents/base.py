@@ -105,7 +105,7 @@ INSTRUCTIONS:
 5. Provide your assessment as structured JSON with the following fields:
    - "summary": A 2-3 sentence overview of your findings.
    - "key_findings": A list of the most important findings (strings).
-   - "risks": A list of identified risks (strings).
+   - "risks": A list of identified risks (strings). Where a risk has a date, a size and a direction, state all three: "1B XPL unlocks 28 Jul 2026, ~39.8% of float, bearish". An undated risk cannot be watched or graded. Where a risk genuinely resolves on no date, prefix it "Structural:". Never invent a date or a figure to satisfy this.
    - "opportunities": A list of identified opportunities (strings).
    - "data_quality": a JSON object with keys "verified_claims" (integer), "inferred_claims" (integer), "unknown_gaps" (list of strings for things you could not verify)
    - "score": Your score from 0-100 (integer) where 100 is best.

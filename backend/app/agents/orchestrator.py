@@ -62,10 +62,15 @@ _BAND_DECISION: dict[str, str] = {"INVEST": "BUY", "WATCH": "WATCH", "PASS": "PA
 # VETO/INVEST pair is not the Chair contradicting the score. INSUFFICIENT_DATA
 # is excluded because it is the absence of a decision.
 _COMPARABLE_DECISIONS = frozenset(_BAND_DECISION.values())
+_DECISION_BAND: dict[str, str] = {v: k for k, v in _BAND_DECISION.items()}
+
+
+# Band ordering, so "how far apart" is a number and not a vibe.
+_BAND_RANK: dict[str, int] = {"PASS": 0, "WATCH": 1, "INVEST": 2}
 
 
 def score_band(score: float | None) -> str | None:
-    """Which recommendation band a weighted score falls in, or None."""
+    """Which recommendation band a score falls in, or None."""
     if score is None:
         return None
     if score >= INVEST_SCORE_THRESHOLD:
@@ -75,67 +80,170 @@ def score_band(score: float | None) -> str | None:
     return "PASS"
 
 
+def _coerce_score(value: object) -> float | None:
+    """A score out of an LLM payload, or None. Never raises.
+
+    The Report Writer is asked for `<weighted average>` and returns whatever it
+    returns — a float, a string, "N/A", or nothing at all.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def extract_chair_visible_score(draft_report: JSONObject) -> tuple[float | None, str]:
+    """The score the Chair actually reads, and where it came from.
+
+    This is NOT `_calc_score`'s weighted number. It is the Report Writer's own
+    `sections.22_overall_score` (or its top-level `score`), which is an LLM
+    asked to produce a weighted average and given no weights. Recovering it is
+    what distinguishes a divergence between two estimators from the Chair
+    contradicting the evidence it was shown.
+    """
+    if not isinstance(draft_report, dict):
+        return None, "none"
+
+    sections = draft_report.get("sections")
+    if isinstance(sections, dict):
+        score = _coerce_score(sections.get("22_overall_score"))
+        if score is not None:
+            return score, "sections.22_overall_score"
+
+    score = _coerce_score(draft_report.get("score"))
+    if score is not None:
+        return score, "draft_report.score"
+
+    # The orchestrator's own fallback shape, built above when the Report Writer
+    # emitted no `sections` key. Its `overall_score` IS `_calc_score`'s value,
+    # so it cannot diverge from the weighted score by construction.
+    score = _coerce_score(draft_report.get("overall_score"))
+    if score is not None:
+        return score, "draft_report.overall_score (orchestrator fallback: equals the weighted score)"
+
+    return None, "none"
+
+
+def _bands_apart(left: str | None, right: str | None) -> int | None:
+    if left is None or right is None:
+        return None
+    return abs(_BAND_RANK[left] - _BAND_RANK[right])
+
+
 def build_score_reconciliation(
     overall: float | None,
+    draft_report: JSONObject,
     decision: str,
     chair_confidence: str,
     vetoed: bool,
 ) -> ScoreReconciliation:
-    """Compare the weighted score's band against the Chair's decision.
+    """Record the committee's two scores against the Chair's decision.
 
-    Pure and side-effect free. It records the disagreement; it does not resolve
+    Pure and side-effect free. It measures the incoherence; it does not resolve
     it. Nothing here feeds back into `decision`, into `_calc_score`, or into any
-    prompt — per PROJECT_DECISIONS.md D6 the choice of what to *do* about the
-    incoherence is Jacob's, and this function exists to make the rate of it
-    countable so that choice can be made on evidence rather than on the single
-    Aave row (docs/adr/0002-score-chair-coherence.md).
+    prompt — per PROJECT_DECISIONS.md D6 the choice of what to *do* about it is
+    Jacob's, and this exists so that choice can be made on a measured rate
+    rather than on the single Aave row.
+
+    Keeps `divergence` (the two scores disagree with each other) apart from
+    `contradiction` (the score the Chair saw disagrees with the Chair's
+    decision), because they are different defects with different fixes and the
+    system currently cannot tell them apart. Aave was divergence.
     """
-    band = score_band(overall)
-    implied = _BAND_DECISION.get(band) if band else None
+    weighted_band = score_band(overall)
+    visible, source = extract_chair_visible_score(draft_report)
+    visible_band = score_band(visible)
     thresholds = {"invest": INVEST_SCORE_THRESHOLD, "watch": WATCH_SCORE_THRESHOLD}
 
+    divergence = None if (overall is None or visible is None) else weighted_band != visible_band
+    score_delta = None if (overall is None or visible is None) else round(overall - visible, 2)
+    divergence_bands = _bands_apart(weighted_band, visible_band)
+
+    comparable = overall is not None and not vetoed and decision in _COMPARABLE_DECISIONS
+
+    contradiction: bool | None = None
+    contradiction_bands: int | None = None
+    apparent: bool | None = None
+    apparent_bands: int | None = None
+
+    if comparable:
+        apparent = _BAND_DECISION[weighted_band] != decision
+        apparent_bands = _bands_apart(weighted_band, _DECISION_BAND[decision])
+        if visible_band is not None:
+            contradiction = _BAND_DECISION[visible_band] != decision
+            contradiction_bands = _bands_apart(visible_band, _DECISION_BAND[decision])
+
+    conflict = bool(divergence) or bool(contradiction) or bool(apparent)
+
     if overall is None:
-        comparable, conflict = False, False
         detail = "No weighted score was computable, so there is nothing to compare."
     elif vetoed:
-        comparable, conflict = False, False
         detail = (
-            f"Risk Officer veto overrides the Chair, so the {band} band "
+            f"Risk Officer veto overrides the Chair, so the {weighted_band} band "
             f"({overall}) is not comparable against the recorded VETO."
         )
     elif decision not in _COMPARABLE_DECISIONS:
-        comparable, conflict = False, False
         detail = (
             f"Decision {decision!r} is not one of BUY/WATCH/PASS, so the "
-            f"{band} band ({overall}) has nothing to disagree with."
+            f"{weighted_band} band ({overall}) has nothing to disagree with."
         )
     else:
-        comparable = True
-        conflict = implied != decision
-        if conflict:
-            detail = (
-                f"Weighted score {overall} falls in the {band} band, which "
-                f"implies {implied}, but the Chair returned {decision} at "
-                f"{chair_confidence} conviction."
+        parts = []
+        if visible is None:
+            parts.append(
+                f"The Chair's report carried no readable score, so only the "
+                f"ledger view is available: weighted {overall} is {weighted_band}, "
+                f"the Chair returned {decision}."
             )
         else:
-            detail = (
-                f"Weighted score {overall} falls in the {band} band and the "
-                f"Chair returned {decision}; they agree."
+            parts.append(
+                f"The Chair read {visible} ({visible_band}, from {source}); the "
+                f"ledger stores the weighted {overall} ({weighted_band})."
             )
+            parts.append(
+                "The two scores diverge by "
+                f"{score_delta:+} across {divergence_bands} band(s)."
+                if divergence
+                else f"The two scores agree on band ({weighted_band}), delta {score_delta:+}."
+            )
+            parts.append(
+                f"Against the number it actually saw, the Chair's {decision} "
+                f"is {'a contradiction' if contradiction else 'consistent'}"
+                f"{f' ({contradiction_bands} band(s) apart)' if contradiction else ''}."
+            )
+        parts.append(
+            f"Read from the ledger alone the decision looks "
+            f"{'contradictory' if apparent else 'consistent'}"
+            f"{f' ({apparent_bands} band(s) apart)' if apparent else ''}."
+        )
+        detail = " ".join(parts)
 
     return {
-        "overall_score": overall,
-        "score_band": band,
-        "band_implied_decision": implied,
+        "weighted_score": overall,
+        "weighted_band": weighted_band,
+        "chair_visible_score": visible,
+        "chair_visible_band": visible_band,
+        "chair_visible_source": source,
         "chair_decision": decision,
         "chair_confidence": chair_confidence,
         "comparable": comparable,
+        "divergence": divergence,
+        "score_delta": score_delta,
+        "divergence_bands_apart": divergence_bands,
+        "contradiction": contradiction,
+        "contradiction_bands_apart": contradiction_bands,
+        "apparent_contradiction": apparent,
+        "apparent_bands_apart": apparent_bands,
         "conflict": conflict,
         "detail": detail,
         "thresholds": thresholds,
     }
-
 
 
 class Orchestrator:
@@ -357,10 +465,17 @@ class Orchestrator:
 
         chair_confidence = str(chair.output.get("conviction_level", "unknown") or "unknown")
         reconciliation_check = build_score_reconciliation(
-            overall, str(decision), chair_confidence, bool(vetoed)
+            overall, draft_report, str(decision), chair_confidence, bool(vetoed)
         )
         if reconciliation_check["conflict"]:
-            logger.warning("SCORE/DECISION CONFLICT for %s: %s", project_name, reconciliation_check["detail"])
+            logger.warning(
+                "SCORE RECONCILIATION for %s (divergence=%s contradiction=%s apparent=%s): %s",
+                project_name,
+                reconciliation_check["divergence"],
+                reconciliation_check["contradiction"],
+                reconciliation_check["apparent_contradiction"],
+                reconciliation_check["detail"],
+            )
 
         result = {
             "project_name": project_name,
@@ -381,9 +496,11 @@ class Orchestrator:
             "signposts": chair.output.get("signposts", []),
             "review_date": chair.output.get("review_date", ""),
             # Written verbatim into reports.content by api/evaluate._persist_report,
-            # so the conflict rate is queryable:
-            #   SELECT content->'score_reconciliation'->>'conflict', count(*)
-            #     FROM reports GROUP BY 1;
+            # so the rates are queryable rather than reconstructed months later:
+            #   SELECT content->'score_reconciliation'->>'divergence'     AS diverged,
+            #          content->'score_reconciliation'->>'contradiction'  AS contradicted,
+            #          count(*)
+            #     FROM reports GROUP BY 1, 2;
             "score_reconciliation": reconciliation_check,
         }
 

@@ -36,32 +36,57 @@ ScoreBand: TypeAlias = Literal["INVEST", "WATCH", "PASS"]
 
 
 class ScoreReconciliation(TypedDict):
-    """Whether the committee's weighted score and the Chair's call agree.
+    """The committee's two scores and the Chair's decision, compared.
 
-    The two numbers are produced by different methods — ``_calc_score`` is
-    deterministic weighted arithmetic over the ten scored agents, the decision
-    is an LLM judgement — and until this record existed nothing in the pipeline
-    compared them. Aave on 11 June 2026 scored 77.20 (INVEST band) and the Chair
-    returned PASS at high confidence; both were written to adjacent columns and
-    the disagreement was invisible (docs/CONTRACTS.md §2.6, docs/adr/0002).
+    There are three different "scores" in this system and they are not the same
+    number (docs/adr/0002-score-chair-coherence.md §3):
 
-    This structure is an *instrument*, not a control: it records the
-    disagreement so the conflict rate is measurable, and changes nothing about
-    how either value is produced. Per PROJECT_DECISIONS.md D6 the score is not
-    shown to the Chair and the decision semantics are untouched.
+    * ``_calc_score`` — deterministic, weighted over ten agents. This is what
+      lands in ``calibration_records.overall_score``.
+    * ``sections.22_overall_score`` — an LLM asked for a weighted average and
+      given no weights. This is the number that reaches the **Chair**.
+    * ``chair.output["score"]`` — invented by the Chair, parsed, then discarded.
 
-    ``comparable`` is False whenever the comparison is not meaningful — no
-    score was computable, the Risk Officer vetoed (so the decision is not the
-    Chair's own read of the evidence), or the decision is not one of
-    BUY/PASS/WATCH. ``conflict`` is always False when ``comparable`` is False.
+    Handoff §3.1 read the Aave row as the Chair overriding a 77.20 it disliked.
+    It did not: `agent/retrospective` recovered the adjudication trace and the
+    Chair had read the Report Writer's **73.5**, a WATCH-band number, and
+    reasoned coherently about it. The weighted 77.20 was computed nine lines
+    later and written to the ledger. The two numbers never met.
+
+    That distinction decides the remedy, so this record keeps the two failure
+    modes apart rather than collapsing them into one "conflict" flag:
+
+    * ``divergence`` — the two *scores* disagree with each other. A measurement
+      problem: two estimators of the same quantity disagree, and only one is
+      stored. Aave was this.
+    * ``contradiction`` — the score the Chair actually saw disagrees with the
+      Chair's own decision. A judgement problem: the adjudicator departed from
+      the evidence in front of it.
+    * ``apparent_contradiction`` — the weighted score's band against the
+      decision. This is what the ledger alone shows, and it is what handoff
+      §3.1 saw. Recorded because it is the view any historical analysis of the
+      existing eight rows is stuck with, and because the gap between it and
+      ``contradiction`` is exactly the divergence.
+
+    Purely an instrument. Per PROJECT_DECISIONS.md D6 nothing here is shown to
+    the Chair and nothing here changes ``decision``.
     """
 
-    overall_score: float | None
-    score_band: ScoreBand | None
-    band_implied_decision: Literal["BUY", "WATCH", "PASS"] | None
+    weighted_score: float | None
+    weighted_band: ScoreBand | None
+    chair_visible_score: float | None
+    chair_visible_band: ScoreBand | None
+    chair_visible_source: str
     chair_decision: str
     chair_confidence: str
     comparable: bool
+    divergence: bool | None
+    score_delta: float | None
+    divergence_bands_apart: int | None
+    contradiction: bool | None
+    contradiction_bands_apart: int | None
+    apparent_contradiction: bool | None
+    apparent_bands_apart: int | None
     conflict: bool
     detail: str
     thresholds: dict[str, float]

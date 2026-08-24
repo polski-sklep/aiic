@@ -126,12 +126,37 @@ def _has_meaningful_value(value: Any) -> bool:
     return True
 
 
+#: Hard ceiling on any single rendered field, in characters.
+#:
+#: QA-043, partially. ``limit`` is a no-op for strings — ``_stringify_prompt_value``
+#: excludes str from its Sequence branch — so ``("summary", "Summary", 3)`` at
+#: synthesis_agents.py and risk_officer.py reads as "3 items" and renders the
+#: whole summary. With eight data agents that makes prompt size a function of
+#: agent verbosity, and the veto-holding agent carries the load.
+#:
+#: This bounds the damage without redefining ``limit``. Making ``limit`` bind
+#: strings numerically — the only reading that satisfies QA-043's test — would
+#: reinterpret the literal 3 at both call sites as *three characters*, and one of
+#: those call sites is agents/risk_officer.py, owned by agent/personas. Landing
+#: half of that change would truncate every data agent's summary to "xxx" in the
+#: Risk Officer's prompt, which is worse than the defect. It needs one edit
+#: across both owners; see the report.
+MAX_PROMPT_FIELD_CHARS = 1000
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + "..."
+
+
 def _stringify_prompt_value(value: Any, *, limit: int | None = None) -> str:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         items = [str(item) for item in value if item is not None]
         if limit is not None:
             items = items[:limit]
-        return "; ".join(items)
+        return _truncate("; ".join(items), MAX_PROMPT_FIELD_CHARS)
     if isinstance(value, Mapping):
-        return json.dumps(value, default=str, ensure_ascii=True, sort_keys=True)
-    return str(value)
+        rendered = json.dumps(value, default=str, ensure_ascii=True, sort_keys=True)
+        return _truncate(rendered, MAX_PROMPT_FIELD_CHARS)
+    return _truncate(str(value), MAX_PROMPT_FIELD_CHARS)

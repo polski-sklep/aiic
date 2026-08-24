@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 
 from app.llm import ToolDefinition
+from app.tools.contracts import ToolFunc
 from app.utils.types import ToolArguments, ToolResult
 
 logger = logging.getLogger(__name__)
-
-ToolFunc = Callable[[ToolArguments], Awaitable[ToolResult]]
 
 
 class ToolRegistry:

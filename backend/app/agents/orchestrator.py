@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 
 from app.agents.base import AgentResult, BaseAgent
@@ -246,6 +247,221 @@ def build_score_reconciliation(
     }
 
 
+# Words that carry no discriminating signal when matching one agent's phrasing
+# of a risk against another's.
+_RISK_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "cannot", "could", "for",
+    "from", "has", "have", "in", "is", "it", "its", "may", "might", "not", "of",
+    "on", "or", "risk", "risks", "that", "the", "there", "this", "to", "very",
+    "which", "will", "with", "would",
+})
+
+# Two risk statements are treated as the same risk when their token sets overlap
+# by at least this much. Measured on a six-agent convergent-risk fixture:
+# genuinely duplicate pairs scored 0.455-0.875, unrelated pairs 0.000-0.125.
+# 0.40 sits in the middle of that empty band with margin on both sides.
+#
+# Erring toward NOT merging is the right bias: a false merge destroys a distinct
+# risk from the only surviving record of the committee's thinking, whereas a
+# false split merely fails to surface a convergence.
+_RISK_MATCH_THRESHOLD = 0.40
+
+
+def _risk_tokens(text: str) -> set[str]:
+    """Normalised token set for one risk statement.
+
+    Word order is deliberately discarded. The old key was
+    `f"[{agent}] {risk}"[:50].lower()` — a prefix of a string that *began with
+    the agent name*, so 15-25 of its 50 characters were exactly the part that
+    differs between agents. It deduplicated nothing across agents, which is the
+    only place duplication actually occurs. A prefix key also cannot survive
+    paraphrase, and these statements are LLM prose: six agents naming one
+    September 2026 unlock wrote it six different ways.
+    """
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    tokens = set()
+    for word in cleaned.split():
+        if word in _RISK_STOPWORDS:
+            continue
+        if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        tokens.add(word)
+    return tokens
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    union = left | right
+    return len(left & right) / len(union) if union else 0.0
+
+
+def dedupe_risks(results: dict[str, AgentResult], skip: set[str], limit: int = 5) -> list[JSONObject]:
+    """Merge the agents' risk lists and rank by how many agents named each one.
+
+    For five of the six projects in the calibration corpus, the Notion block
+    this feeds is the only surviving record of what the committee thought the
+    risks were (CONTRACTS §2.5) — so whatever it drops is gone.
+
+    Two defects were stacked in the old version. The key included the agent name
+    (see `_risk_tokens`), so cross-agent duplicates all survived; and the final
+    `[:5]` then took the first five in `results` insertion order, i.e. data-agent
+    registration order, so "Key Risks" was mostly `tokenomics_analyst`'s list
+    rather than the committee's.
+
+    Ranking by distinct-agent count surfaces convergence instead, which is the
+    signal worth keeping: Plasma is the corpus's one clean HIT precisely because
+    six agents independently named the same dated unlock, and that convergence
+    is invisible in the artefact the old code stored. Ties keep first-seen
+    order, so the output is deterministic.
+
+    Matching is single-linkage over Jaccard similarity — approximate, as any
+    paraphrase matching must be, and biased toward leaving risks separate.
+    """
+    clusters: list[JSONObject] = []
+
+    for agent_name, result in results.items():
+        if agent_name in skip or result.error or not isinstance(result.output, dict):
+            continue
+        risks = result.output.get("risks")
+        if not isinstance(risks, list):
+            continue
+
+        for risk in risks:
+            text = str(risk).strip()
+            if not text:
+                continue
+            tokens = _risk_tokens(text)
+            if not tokens:
+                continue
+
+            match = None
+            for cluster in clusters:
+                if max(_jaccard(tokens, member) for member in cluster["token_sets"]) >= _RISK_MATCH_THRESHOLD:
+                    match = cluster
+                    break
+
+            if match is None:
+                clusters.append({
+                    "text": text,
+                    "agents": [agent_name],
+                    "token_sets": [tokens],
+                    "order": len(clusters),
+                })
+                continue
+
+            match["token_sets"].append(tokens)
+            if agent_name not in match["agents"]:
+                match["agents"].append(agent_name)
+            # Keep the fullest phrasing of a convergent risk.
+            if len(text) > len(match["text"]):
+                match["text"] = text
+
+    ranked = sorted(clusters, key=lambda c: (-len(c["agents"]), c["order"]))
+    return [
+        {"text": c["text"], "agents": c["agents"], "agent_count": len(c["agents"])}
+        for c in ranked[:limit]
+    ]
+
+
+def format_risk_block(risks: list[JSONObject]) -> str:
+    """Render ranked risks for the Notion page, keeping attribution visible."""
+    if not risks:
+        return ""
+    lines = ["", "---", "", "**Key Risks:**"]
+    for index, risk in enumerate(risks, start=1):
+        agents = ", ".join(risk["agents"])
+        if risk["agent_count"] > 1:
+            lines.append(
+                f"\n{index}. {risk['text']}  \n"
+                f"   _named independently by {risk['agent_count']} agents: {agents}_"
+            )
+        else:
+            lines.append(f"\n{index}. [{agents}] {risk['text']}")
+    return "\n".join(lines)
+
+
+def aggregate_data_quality(results: dict[str, AgentResult]) -> JSONObject:
+    """Roll the agents' own `data_quality` blocks up into one record.
+
+    Every agent is asked for `data_quality` — `verified_claims`,
+    `inferred_claims`, `unknown_gaps` (agents/base.py:108) — and separately for
+    a `confidence` of low/medium/high. Nothing has ever connected the two and
+    nothing aggregated the first upward, so an assessment resting entirely on
+    inference could be reported at high confidence and no part of the system
+    would notice. The corpus that exists today was produced under heavy
+    CoinGecko 429 degradation, which is precisely the condition this makes
+    visible.
+
+    Instrument only. It does NOT derive, adjust or override any agent's
+    `confidence`, and it changes no prompt: how the committee reports certainty
+    is a semantics decision that belongs with the conviction question already
+    going to Jacob, the same boundary Task 1 holds.
+    """
+    per_agent: dict[str, JSONObject] = {}
+    verified_total = 0
+    inferred_total = 0
+    gaps: list[str] = []
+    confidence_counts: dict[str, int] = {}
+
+    for name, result in results.items():
+        if result.error or not isinstance(result.output, dict):
+            continue
+        block = result.output.get("data_quality")
+        confidence = result.output.get("confidence")
+        if isinstance(confidence, str) and confidence:
+            confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
+        if not isinstance(block, dict):
+            continue
+
+        verified = _coerce_count(block.get("verified_claims"))
+        inferred = _coerce_count(block.get("inferred_claims"))
+        raw_gaps = block.get("unknown_gaps")
+        agent_gaps = [str(gap) for gap in raw_gaps if gap] if isinstance(raw_gaps, list) else []
+
+        verified_total += verified
+        inferred_total += inferred
+        gaps.extend(f"[{name}] {gap}" for gap in agent_gaps)
+
+        claims = verified + inferred
+        per_agent[name] = {
+            "verified_claims": verified,
+            "inferred_claims": inferred,
+            "unknown_gaps": len(agent_gaps),
+            "verified_ratio": round(verified / claims, 3) if claims else None,
+            "confidence": confidence if isinstance(confidence, str) else None,
+        }
+
+    claims_total = verified_total + inferred_total
+    return {
+        "agents_reporting": len(per_agent),
+        "agents_missing_data_quality": len(
+            [n for n, r in results.items() if not r.error and n not in per_agent]
+        ),
+        "verified_claims": verified_total,
+        "inferred_claims": inferred_total,
+        "verified_ratio": round(verified_total / claims_total, 3) if claims_total else None,
+        "unknown_gap_count": len(gaps),
+        "unknown_gaps": gaps[:40],
+        "confidence_distribution": confidence_counts,
+        "per_agent": per_agent,
+    }
+
+
+def _coerce_count(value: object) -> int:
+    """A non-negative integer out of an LLM payload. Never raises."""
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float):
+        return max(int(value), 0)
+    if isinstance(value, str):
+        try:
+            return max(int(float(value.strip())), 0)
+        except ValueError:
+            return 0
+    return 0
+
+
 class Orchestrator:
     """9-step committee evaluation pipeline with 15 agents."""
 
@@ -463,6 +679,18 @@ class Orchestrator:
         if vetoed:
             decision = "VETO"
 
+        data_quality = aggregate_data_quality(agent_results)
+        if data_quality["verified_ratio"] is not None and data_quality["verified_ratio"] < 0.5:
+            logger.warning(
+                "DATA QUALITY for %s: only %.0f%% of %d claims were verified "
+                "(%d unknown gaps); agent confidence distribution %s",
+                project_name,
+                100 * data_quality["verified_ratio"],
+                data_quality["verified_claims"] + data_quality["inferred_claims"],
+                data_quality["unknown_gap_count"],
+                data_quality["confidence_distribution"],
+            )
+
         chair_confidence = str(chair.output.get("conviction_level", "unknown") or "unknown")
         reconciliation_check = build_score_reconciliation(
             overall, draft_report, str(decision), chair_confidence, bool(vetoed)
@@ -502,6 +730,9 @@ class Orchestrator:
             #          count(*)
             #     FROM reports GROUP BY 1, 2;
             "score_reconciliation": reconciliation_check,
+            # Aggregated, persisted, and deliberately not fed back into any
+            # agent's `confidence` — see aggregate_data_quality.
+            "data_quality": data_quality,
         }
 
         project_metadata = context.get("project_info", {})
@@ -623,7 +854,6 @@ class Orchestrator:
             from app.tools.notion import update_project_evaluation
 
             summaries = []
-            all_risks = []
             skip_agents = {"report_writer", "ray_dalio", "committee_chair"}
             for agent_name, result in results.items():
                 if agent_name in skip_agents:
@@ -632,20 +862,9 @@ class Orchestrator:
                     summary = result.output.get("summary", "")
                     if summary:
                         summaries.append(f"**{agent_name}** (score: {result.score}): {summary}")
-                    for risk in result.output.get("risks", []):
-                        all_risks.append(f"[{agent_name}] {risk}")
-            seen = set()
-            unique_risks = []
-            for risk in all_risks:
-                key = risk[:50].lower()
-                if key not in seen:
-                    seen.add(key)
-                    unique_risks.append(risk)
+
             report_text = "\n\n".join(summaries)
-            if unique_risks[:5]:
-                report_text += "\n\n---\n\n**Key Risks:**\n"
-                for index, risk in enumerate(unique_risks[:5], start=1):
-                    report_text += f"\n{index}. {risk}"
+            report_text += format_risk_block(dedupe_risks(results, skip_agents))
             if settings.notion_projects_db:
                 await update_project_evaluation(
                     project_name=name,

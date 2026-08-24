@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 import httpx
 
 from app.config import get_settings
 from app.llm import JSONValue, SourceReference, ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.utils.types import ToolArguments
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 BASE_URL = "https://api.coingecko.com/api/v3"
 RETRY_DELAYS_SECONDS = (2, 4, 8, 16)
@@ -189,7 +188,7 @@ async def get_token_info(args: ToolArguments) -> CoinGeckoTokenInfoResult | Tool
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="get_price",

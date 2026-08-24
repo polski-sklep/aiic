@@ -10,8 +10,6 @@
 - Tokenomics documents
 - Vesting and unlock trackers
 - Governance documents where relevant
-- Inputs from Knowledge Agent
-- Inputs from Economics
 
 ## Preferred Order
 1. Official wallet and treasury disclosures
@@ -19,7 +17,6 @@
 3. Dune and analytics dashboards
 4. Wallet intelligence platforms
 5. Tokenomics and unlock documents
-6. Supporting context from Knowledge Agent and Economics
 
 ## Tool Usage Rules
 - Start with direct observable chain data before relying on summaries

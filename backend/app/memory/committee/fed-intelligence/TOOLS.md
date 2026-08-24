@@ -8,17 +8,12 @@
 - Market data sources
 - Rates and yield dashboards
 - Dollar and liquidity indicators
-- Inputs from Knowledge Agent
-- Inputs from Economics
-- Inputs from Valuation Scorer
-- Inputs from Portfolio Manager
 
 ## Preferred Order
 1. Central bank statements and official releases
 2. Major macro data releases
 3. Market and rates context
-4. Knowledge Agent context pack
-5. Supporting public web sources
+4. Supporting public web sources
 
 ## Tool Usage Rules
 - Start with official policy posture before reading market commentary

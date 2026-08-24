@@ -5,14 +5,13 @@ Minimal params for Free/Basic tier compatibility.
 """
 from __future__ import annotations
 import httpx
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 from app.llm import ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.utils.types import ToolArguments
 from app.config import get_settings
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 X_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
 
@@ -81,7 +80,7 @@ async def search_twitter(args: ToolArguments) -> TwitterSearchResult | ToolError
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="search_twitter",

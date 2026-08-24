@@ -168,3 +168,80 @@ of the calibration ledger. Publishing to a public repository and mutating a
 running production service are both outward-facing, and neither was asked for.
 
 **Consequence:** the handover ends with the exact two commands to deploy.
+
+---
+
+## D9 — The score/chair incoherence is a sequencing defect, not a philosophy problem
+
+**Discovered:** `agent/architecture`, confirmed independently by the orchestrator.
+
+`orchestrator.py` runs the Chair at line 222 and computes
+`overall = self._calc_score(...)` at line 231. **The weighted score does not
+exist when the Chair decides.** The Chair's own score is parsed and then
+discarded (`committee_chair` is in `exclude_from_scores`). The 75/60 thresholds
+live only inside `_simple_rec`, which runs on the report-failure branch over an
+*unweighted* mean. And `chair.py` truncates the serialised 24-section draft
+report to 6000 characters with a raw byte slice, so the score in section 22 is
+very likely cut before the Chair ever sees it.
+
+Nothing compares the score to the decision **because nothing can**.
+
+**Decision:** split the fix along the line D6 draws.
+
+- *Defect half, done now:* compute the score before the Chair call, detect
+  band-vs-decision contradictions, and record them. Decisions are unchanged
+  because the Chair's prompt is unchanged.
+- *Semantic half, Jacob's call:* showing the Chair the number and requiring it
+  to reconcile. That changes what the committee decides.
+
+**Reasoning:** ADR 0002 recommends measuring the conflict rate before choosing a
+redesign. You cannot measure it today. This builds the instrument without
+prejudging the design question.
+
+**Evidence this is not academic:** Aave, the one record where score and
+adjudicator disagreed by a full band, went from $63.09 (11 Jun) to $95.69
+(11 Jul) — about **+52% against BTC's +1.8%**. The score said INVEST, the Chair
+said PASS, and the score appears to have been right. n=1, and one bad override
+is not evidence that overrides are bad — which is precisely why the conflict
+rate needs measuring rather than assuming.
+
+---
+
+## D10 — The documented veto override does not exist
+
+`README.md` and handoff §3 both state "the Chair can override a veto with
+documented reasoning". The code does `if vetoed: decision = "VETO"`
+unconditionally, and `chair.py`'s prompt tells the Chair "you may acknowledge
+the veto but cannot override it".
+
+Code and prompt agree with each other; **the documentation is wrong.** This is
+the fifth documented-vs-actual divergence found in this system.
+
+**Decision:** fix the documentation, do not implement the override. Whether the
+Chair *should* be able to override a veto is a governance question about where
+final authority sits, and it interacts directly with the Risk Officer's newly
+narrowed veto scope (§11). It goes to Jacob.
+
+---
+
+## D11 — Propagating settled Risk Officer decisions is execution, not governance
+
+Three veto lists reach the Risk Officer at runtime and they conflict: the
+rewritten persona's closed list of seven, six hardcoded triggers in
+`agents/risk_officer.py`, and six more in `memory/risk_policy.md` marked "No
+override possible". `risk_policy.md` vetoes on "Active SEC/DOJ investigation",
+which handoff §11 decision 2 explicitly reclassifies as thesis risk rather than
+a trap.
+
+**Decision:** align all three to the §11 settled decisions and the D4
+thresholds, rather than leaving the contradiction live pending Jacob's review.
+
+**Reasoning:** §11 records those four decisions under "Decisions Jacob has made
+(settled)". `risk_policy.md` and `risk_officer.py` predate them and were never
+updated. Aligning them implements his decision; it does not make a new one.
+Three contradictory lists reaching one agent is worse than any single list.
+
+**Safeguard:** every substantive change is reported as an explicit before/after
+line naming the decision that drives it, for Jacob's sign-off. Anything that is
+genuinely a new policy question — the old `>$10M TVL` size test being the likely
+candidate — is flagged rather than decided.

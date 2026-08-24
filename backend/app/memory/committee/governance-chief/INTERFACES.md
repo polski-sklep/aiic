@@ -1,7 +1,6 @@
 # INTERFACES
 
 ## Receives From
-- Knowledge Agent
 - Risk Officer
 - Economics
 - Gov Analyst

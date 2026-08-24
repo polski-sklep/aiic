@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 
 from app.llm import ToolDefinition
+from app.tools.contracts import ToolFunc
 from app.utils.types import ToolArguments, ToolResult
 
 logger = logging.getLogger(__name__)
-
-ToolFunc = Callable[[ToolArguments], Awaitable[ToolResult]]
 
 
 class ToolRegistry:
@@ -68,6 +66,7 @@ def _register_all_tools(registry: ToolRegistry) -> None:
     from app.tools.twitter import register as register_twitter
     from app.tools.web_search import register as register_web_search
     from app.tools.notion_tools import register as register_notion
+    from app.tools.semantic import register as register_semantic
 
     register_binance(registry)
     register_coingecko(registry)
@@ -75,5 +74,6 @@ def _register_all_tools(registry: ToolRegistry) -> None:
     register_web_search(registry)
     register_notion(registry)
     register_twitter(registry)
+    register_semantic(registry)
 
     logger.info(f"Registered {len(registry.tool_names)} tools: {registry.tool_names}")

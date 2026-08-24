@@ -1,13 +1,12 @@
 from __future__ import annotations
 import httpx
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 from app.llm import ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.utils.types import ToolArguments
 from app.config import get_settings
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 
@@ -69,7 +68,7 @@ async def web_search(args: ToolArguments) -> WebSearchResult | ToolError:
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="web_search",

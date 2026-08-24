@@ -634,6 +634,17 @@ def _as_number(value: Any) -> float | None:
         return None
 
 
+def _human_time(value: Any) -> str:
+    """ISO timestamp -> "2026-08-24 08:56 UTC". Falls back to the raw string."""
+    if not value:
+        return ""
+    text = str(value)
+    try:
+        return datetime.fromisoformat(text).strftime("%Y-%m-%d %H:%M UTC")
+    except ValueError:
+        return text
+
+
 # --------------------------------------------------------------------------
 # Page assembly
 # --------------------------------------------------------------------------
@@ -715,6 +726,10 @@ def _render_report_html(parts: ReportParts) -> str:
     head_bits = [f'<span class="meta-item">{_esc(parts.report_date)}</span>']
     if parts.ticker:
         head_bits.append(f'<span class="meta-item">{_esc(parts.ticker)}</span>')
+    if parts.completed_at:
+        head_bits.append(
+            f'<span class="meta-item">Completed {_esc(parts.completed_at)}</span>'
+        )
     if parts.evaluation_id:
         head_bits.append(f'<span class="meta-item mono">{_esc(parts.evaluation_id)}</span>')
 
@@ -935,7 +950,7 @@ def _render_index_html(rows: list[dict]) -> str:
         items = []
         for r in rows:
             cls, glyph, label = _decision_style(r.get("decision", ""))
-            when = _esc(r.get("completed_at") or "")
+            when = _esc(_human_time(r.get("completed_at")))
             eid = _esc(r.get("evaluation_id", ""))
             name = _esc(r.get("project_name", "Unknown"))
             ticker_raw = r.get("ticker")
@@ -1059,10 +1074,26 @@ async def get_markdown_report(evaluation_id: UUID, db: AsyncSession = Depends(ge
 
 
 @router.get("/{evaluation_id}/html", response_class=HTMLResponse)
-async def get_html(evaluation_id: UUID, db: AsyncSession = Depends(get_db)):
-    """Server-rendered HTML report. No JavaScript, no external requests."""
+async def get_html(evaluation_id: str, db: AsyncSession = Depends(get_db)):
+    """Server-rendered HTML report. No JavaScript, no external requests.
+
+    `evaluation_id` is taken as `str` rather than `UUID` on purpose: a report
+    link that got truncated in Telegram should land on the styled 404 page a
+    human can act on, not FastAPI's raw JSON 422.
+    """
     try:
-        parts = await _load_report_parts(evaluation_id, db)
+        parsed = UUID(evaluation_id)
+    except (ValueError, AttributeError, TypeError):
+        return _state_page(
+            status_code=404,
+            heading="Report not found",
+            detail="Evaluation not found",
+            note="That is not a valid evaluation id. The link may have been "
+            "truncated in transit.",
+            kind="missing",
+        )
+    try:
+        parts = await _load_report_parts(parsed, db)
     except ReportUnavailable as exc:
         headings = {
             "missing": "Report not found",

@@ -20,6 +20,7 @@ AGENT_FOLDERS = {
     "technical_analyst": "technical-analyst",
     "governance_analyst": "gov-analyst",
     "onchain_analyst": "onchain-analyst",
+    "tech_infra_analyst": "tech-infra-analyst",
     "competitive_intel": "competitive-intel",
     "field_intel": "fed-intelligence",
     "legal_regulatory": "legal-analyst",

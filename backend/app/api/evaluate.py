@@ -1,18 +1,84 @@
 from __future__ import annotations
+import json
 import logging
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.database import get_db
-from app.models import Project, Evaluation, AgentOutput
+from app.models import Project, Evaluation, AgentOutput, Report
 from app.agents.orchestrator import Orchestrator
 
 router = APIRouter(prefix="/api", tags=["evaluate"])
 logger = logging.getLogger(__name__)
+
+
+def _jsonable(value: Any) -> Any:
+    """Coerce an arbitrary pipeline result into something JSONB will accept.
+
+    Agent outputs are parsed from LLM responses and are normally plain JSON,
+    but a stray datetime or Decimal must not be able to fail the insert and
+    lose the whole evaluation.
+    """
+    return json.loads(json.dumps(value, default=str))
+
+
+def _extract_summary(eval_result: dict) -> str:
+    """Best available one-paragraph summary for the report row."""
+    draft = eval_result.get("draft_report") or {}
+    if isinstance(draft, dict):
+        summary = draft.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary
+
+    chair = (eval_result.get("agent_results") or {}).get("committee_chair") or {}
+    chair_output = chair.get("output") or {} if isinstance(chair, dict) else {}
+    if isinstance(chair_output, dict):
+        for key in ("summary", "reasoning"):
+            candidate = chair_output.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+
+    reasoning = eval_result.get("chair_reasoning")
+    return reasoning if isinstance(reasoning, str) else ""
+
+
+async def _persist_report(
+    db: AsyncSession,
+    evaluation: Evaluation,
+    eval_result: dict,
+) -> Report:
+    """Write a `reports` row for a finished evaluation.
+
+    The table existed with an index and a foreign key but was written by
+    nothing — `api/reports.py` rebuilt markdown from `agent_outputs` at request
+    time. This is the write side.
+
+    Versions are additive: a re-run against the same evaluation appends
+    version N+1 rather than overwriting, so earlier reasoning survives.
+    """
+    max_version = await db.execute(
+        select(func.max(Report.version)).where(Report.evaluation_id == evaluation.id)
+    )
+    next_version = int(max_version.scalar() or 0) + 1
+
+    report = Report(
+        evaluation_id=evaluation.id,
+        version=next_version,
+        content=_jsonable(eval_result),
+        summary=_extract_summary(eval_result),
+        recommendation=eval_result.get("recommendation", "INSUFFICIENT_DATA"),
+        overall_score=eval_result.get("overall_score"),
+        risk_score=eval_result.get("risk_score"),
+        vetoed=bool(eval_result.get("vetoed", False)),
+        veto_reason=eval_result.get("veto_reason"),
+    )
+    db.add(report)
+    return report
 
 
 class EvaluateRequest(BaseModel):
@@ -119,6 +185,10 @@ async def trigger_evaluation(
                 error=agent_data.get("error"),
             )
             db.add(agent_output)
+
+        # Persist the report itself rather than rebuilding it from
+        # `agent_outputs` on every request.
+        await _persist_report(db, evaluation, eval_result)
 
         evaluation.status = "completed"
         evaluation.completed_at = datetime.now(timezone.utc)

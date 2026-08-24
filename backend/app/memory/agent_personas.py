@@ -4,6 +4,10 @@ Reads multi-file agent personas from app/memory/committee/<folder>/.
 Each folder can contain: SOUL.md, SKILLS.md, TOOLS.md, INTERFACES.md,
 CONSTRAINTS.md, MEMORY.md. Files are concatenated in a fixed order
 to build the agent's full persona context.
+
+No caching: every call re-reads from disk, so an rsync of markdown onto a
+running box (the `sync-committee` fast path) takes effect on the next
+evaluation with no reload hook and no restart.
 """
 from __future__ import annotations
 
@@ -58,10 +62,6 @@ def load_agent_persona(agent_name: str) -> str:
     combined = "\n\n---\n\n".join(parts)
     logger.debug(f"Loaded persona for {agent_name} from {folder_name}/: {len(combined)} chars, {len(parts)} files")
     return combined
-
-
-def reload_personas() -> None:
-    logger.info("Agent personas reloaded from disk")
 
 
 def list_personas() -> dict[str, str]:

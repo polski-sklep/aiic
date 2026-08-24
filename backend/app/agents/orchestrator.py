@@ -72,7 +72,17 @@ class Orchestrator:
         knowledge_context: str = "",
         current_portfolio: list[JSONObject] | None = None,
         on_status: StatusCallback = None,
+        evaluation_id: str | None = None,
     ) -> JSONObject:
+        """Run the 15-agent pipeline.
+
+        ``evaluation_id`` is the id of the ``evaluations`` row this run belongs
+        to. It is threaded into ``record_calibration`` so that every calibration
+        record can be joined back to the reasoning that produced it. Callers
+        that bypass the API (e.g. one-off harness scripts) may leave it None,
+        but the resulting record will be orphaned — all eight production rows
+        written before this parameter existed have ``evaluation_id IS NULL``.
+        """
         project_info = project_info or {}
         agent_results: dict[str, AgentResult] = {}
         context: JSONObject = {
@@ -258,8 +268,15 @@ class Orchestrator:
         try:
             from app.knowledge.calibration import record_calibration
 
+            if evaluation_id is None:
+                logger.warning(
+                    "Calibration record for %s will be orphaned: no evaluation_id "
+                    "was supplied to Orchestrator.evaluate()",
+                    project_name,
+                )
+
             await record_calibration(
-                evaluation_id=None,
+                evaluation_id=evaluation_id,
                 project_name=project_name,
                 ticker=str(project_metadata.get("ticker", "") or ""),
                 coingecko_id=str(project_metadata.get("coingecko_id", "") or ""),

@@ -1,15 +1,14 @@
 """Binance public API tools for candles, orderbook depth, and derived TA levels."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 import httpx
 
 from app.llm import JSONValue, SourceReference, ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.utils.types import ToolArguments
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 BINANCE_API = "https://api.binance.com/api/v3"
 COMMON_QUOTES = ("USDT", "USDC", "FDUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "BUSD")
@@ -389,7 +388,7 @@ async def compute_technical_levels(args: ToolArguments) -> dict[str, JSONValue] 
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="get_klines",

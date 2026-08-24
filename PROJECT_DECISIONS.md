@@ -312,3 +312,52 @@ not robust to the observation date. The qualitative findings — which classes o
 variable the committee notices and which it misses — are robust, because they
 rest on what was written rather than on where the price landed. Weight the
 findings, not the scorecard.
+
+---
+
+## D14 — The live container runs a four-month-old image whose CMD no longer matches the repo
+
+**Found by:** checking the runtime rather than the Dockerfile, after `agent/core`
+noticed the repo's `CMD` has no `--reload`.
+
+```
+repo Dockerfile (and the VPS's own checkout):
+  CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8100"]
+
+what is actually running on the VPS:
+  ["uvicorn","app.main:app","--host","0.0.0.0","--port","8100","--reload"]
+
+running image created: 2026-04-10   container recreated: 2026-07-09
+```
+
+The container was recreated in July but **reused the April image** — no
+`--build`. That image was built from a Dockerfile that carried `--reload`. The
+repo has not carried it for at least as long as the current history goes back,
+and `docker-compose.yml` has no `command` override on either side.
+
+**Why this matters more than it looks.** Handoff §7.3 states that
+`git pull --ff-only` on the VPS *is* the entire deploy, and §7.2 that Python
+changes hot-reload without a restart. Both are true **today**, and true only
+because of a stale image: WatchFiles is picking up the bind-mounted source.
+
+**The next rebuild silently ends that.** After
+`docker compose up -d --build backend`, the container runs without `--reload`,
+and from then on `git pull` alone changes nothing about the running Python. A
+deploy that appears to succeed would leave the old code serving.
+
+**Decision:** do not change the Dockerfile. Running a production service with
+`--reload` is the defect, not the fix — it also gave an in-container write the
+ability to hot-load rewritten source, which is why the container is now non-root.
+
+**Consequence, and it is the single most important line in the handover:** the
+deploy is now
+
+```
+git pull --ff-only && docker compose up -d --build backend
+```
+
+Persona markdown is unaffected — `load_agent_persona` reads from disk on every
+call, so `sync-committee` still takes effect with no restart at all.
+
+This is the sixth documented-vs-actual divergence found in this system, and the
+only one that would have been invisible from the repository alone.

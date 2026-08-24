@@ -61,7 +61,44 @@ agent summaries, and — per `docs/CONTRACTS.md` §3.1 — start passing a real
 `evaluation_id` into `record_calibration` so the ledger can reach the trace at
 all. Today all eight rows have `evaluation_id IS NULL` (§2.4).
 
-## R3 — Require every named risk to carry a date and a direction
+## R3 — Compute the score before the Chair runs, and truncate the report by section
+
+**Artifact:** `backend/app/agents/orchestrator.py` (owner: `agent/persistence`)
+and `backend/app/agents/chair.py` (**owner unassigned in `docs/CONTRACTS.md`
+§1 — the orchestrator needs to allocate it before this is actioned**)
+**Evidence:** F10
+**Cost:** small for both halves. Highest value-to-cost ratio in this document.
+
+Two independent defects, both live on all six evaluations, both cheap.
+
+**The score does not exist when the Chair decides.** `orchestrator.py` runs the
+Chair and only afterwards computes `overall = self._calc_score(agent_results)`.
+The Chair's own score is parsed and discarded. So the ledger stores a computed
+number beside a decision that number never informed, and the two are then read
+as if they disagreed. Move the `scores` / `_calc_score` block above the Chair
+call and pass the result into `chair_context`. This changes what the Chair sees,
+so it is a behaviour change and needs a run to validate — but it is the
+difference between a Chair that ignored a score and a Chair that never got one.
+
+**The report is truncated by a raw character slice.** `chair.py:34` does
+`json.dumps(report, indent=2, default=str)[:6000]`. On the Aave run that cost
+six of twenty-four sections including `24_signposts_to_monitor` and
+`7_competitive_landscape` — on a case whose loudest bear argument was competition.
+Worse, *which* sections are lost depends on the model's key emission order:
+re-serialise the same report numerically and the cut lands between sections 16
+and 17, taking the bear case, key risks, mandate compliance, score breakdown,
+overall score, recommendation and signposts. Non-deterministic and unlogged.
+
+Fix: drop whole sections in a declared priority order until the budget is met,
+and log which were dropped. Budget by tokens, not characters, while in there.
+
+Do R3 before R10. "Replace cardinal scoring with ordinal conviction tiers" is a
+response to a Chair that ignores its own score; this Chair never received one.
+Sequencing it correctly is the experiment that tells you whether the cardinal
+score is the problem at all, and it costs one afternoon against a redesign of
+decision semantics.
+
+## R4 — Require every named risk to carry a date and a direction
 
 **Artifact:** the risk-emission instruction in
 `backend/app/memory/committee/**` personas (owner: `agent/personas`), and the
@@ -84,7 +121,7 @@ not a risk.
 This is what makes every later recommendation possible: an undated risk cannot
 be watched, cannot be scored and cannot become a signpost.
 
-## R4 — Fix the "top five deduplicated risks" — it is one agent's list
+## R5 — Fix the "top five deduplicated risks" — it is one agent's list
 
 **Artifact:** `backend/app/agents/orchestrator.py::_notion_write`
 (owner: `agent/persistence`)
@@ -107,24 +144,50 @@ predictive lines.
 Because Notion is the only durable record, this defect has already cost the
 project once.
 
-## R5 — Give `tech_infra_analyst` a persona
+## R6 — Repair the persona layer: two missing, six describing a pipeline that does not exist
 
-**Artifact:** `backend/app/memory/agent_personas.py::AGENT_FOLDERS` and a new
-`backend/app/memory/committee/` folder (owner: `agent/personas`)
-**Evidence:** F7, plus `docs/CONTRACTS.md` §2.1
-**Cost:** trivial to wire; a day to write good persona content.
+**Artifact:** `backend/app/memory/agent_personas.py::AGENT_FOLDERS`, a new
+`backend/app/memory/committee/` folder for `tech_infra_analyst`, and the
+`INTERFACES.md` files of the eight data agents (owner: `agent/personas`)
+**Evidence:** F2, F7, `00-method.md` contaminations 10 and 11,
+`docs/CONTRACTS.md` §2.1
+**Cost:** trivial to wire; a day or two of writing.
 
-`tech_infra_analyst` carries the joint-highest score weight (0.15), is missing
-from `AGENT_FOLDERS`, and runs on `role_description` because
-`load_agent_persona` returns `""`. It is also the second-most optimistic agent
-measured, **+7.3 points above the composite** and above it on five of six
+Three defects, all live on every run in this corpus.
+
+**`tech_infra_analyst` has no persona.** It carries the joint-highest score
+weight (0.15), is missing from `AGENT_FOLDERS`, and runs on `role_description`
+because `load_agent_persona` returns `""`. It is also the second-most optimistic
+agent measured, **+7.3 above the composite** and above it on five of six
 projects. A 15% weight on an unconstrained generic prompt is the most plausible
-explanation, and the cheapest thing here to test.
+explanation for the bias and the cheapest thing here to test.
 
-While in that file: `technical-analyst/` holds one file against four to six for
-every other agent, and `knowledge-agent/` is an orphan folder mapped to nothing.
+**`technical-analyst` has one file where its peers have four to six**, and no
+`INTERFACES.md`. Its output never touches the composite (`§4.1` excludes it) but
+does reach the Chair as `technical_entry_context`. Entry timing is advised by
+the thinnest persona in the committee.
 
-## R6 — Make the upside branch mandatory
+**Six of eight data-agent personas promise inputs the runtime cannot deliver.**
+`economics`, `gov-analyst`, `onchain-analyst`, `competitive-intel`,
+`fed-intelligence` and `legal-analyst` each declare a "Receives From" list naming
+sibling data agents, and list sibling outputs under "Optional Inputs" — Economics
+expects "Governance analysis" that will never arrive. The eight run in parallel
+and cannot see each other, and that independence is load-bearing
+(`docs/CONTRACTS.md` §4.2), so the fix is to correct the persona text, **not** to
+start passing peer output. Rewrite "Receives From" to name only what the
+orchestrator actually supplies, and state explicitly in each file that no
+sibling analysis is coming and the agent is solely responsible for its own
+evidence.
+
+That last change is the cheap test of F2's candidate mechanism: if the Aave-style
+frame gap — the value-accrual agent leaving a governance-flagged catalyst
+unexamined — survives personas that stop promising a collaborator, the cause is
+elsewhere and the next place to look is R7.
+
+While in `AGENT_FOLDERS`: `knowledge-agent/` is a sixth orphan folder mapped to
+nothing.
+
+## R7 — Make the upside branch mandatory
 
 **Artifact:** `backend/app/memory/committee/economics/`, `fed-intelligence/`,
 `legal-analyst/`, `competitive-intel/` personas (owner: `agent/personas`)
@@ -143,7 +206,7 @@ jurisdiction, enforcement — and never a forward catalyst. The largest price ev
 in the window was macro-regulatory and positive.
 
 Require each of these four personas to emit, symmetrically with its risks, a
-short list of **dated catalysts with a bullish direction** under the same R3
+short list of **dated catalysts with a bullish direction** under the same R4
 schema. Not price targets — events: scheduled votes, activation thresholds
 already met, filings, listings, integrations.
 
@@ -153,7 +216,7 @@ not challenge it. On Aave the information was never lost — the Devil's Advocat
 which sees everything, stated the buyback thesis and rejected it. The failure was
 adjudication, not collection.
 
-## R7 — Grade at more than one date; never read alpha off a single day
+## R8 — Grade at more than one date; never read alpha off a single day
 
 **Artifact:** `backend/app/knowledge/calibration.py` and the
 `calibration_records` columns (owners: `agent/calibration`, `agent/persistence`)
@@ -177,7 +240,7 @@ result is beta: at the 30-day marks BTC moved +1.8% and +1.5%, at 67 days
 Use `outcome_notes` (§3.3) for the 67-day mark. Do not let it into a dated
 column.
 
-## R8 — Let data quality reach the confidence field
+## R9 — Let data quality reach the confidence field
 
 **Artifact:** `backend/app/agents/orchestrator.py` (owner: `agent/persistence`),
 consumed by `calibration.py`
@@ -199,7 +262,7 @@ A high-confidence call on contradictory data and a high-confidence call on clean
 data must not be indistinguishable in the ledger — that distinction is the whole
 point of a calibration ledger.
 
-## R9 — Put the conviction question to Jacob as a decision, not a defect
+## R10 — Put the conviction question to Jacob as a decision, not a defect
 
 **Artifact:** `docs/adr/0002-score-chair-coherence.md` (owner:
 `agent/architecture`; D6 in `PROJECT_DECISIONS.md` already commits to this)
@@ -209,12 +272,15 @@ Two corrections that ADR should carry, because the handoff's framing is wrong in
 a way that would misdirect the fix:
 
 1. §3.1 describes the Chair as overriding a computed score with no recorded
-   reasoning. It did not. It produced its own score (73.5, not 77.2), recorded
+   reasoning. It did not, and could not have: `_calc_score` runs *after* the
+   Chair (F10), so the 77.2 did not exist yet. What the Chair had was the report
+   writer's 73.5 — which survived truncation and which it read and acted on. It
+   produced its own score (73.5, not 77.2), recorded
    `report_writer_recommendation: "WATCH"`, `risk_officer_approved_override:
    true`, `threshold_crossed`, `override_reasoning`, and fatal versus non-fatal
    objection lists. The adjudication is sound in form. **The defect is that the
    ledger cannot see it** — `evaluation_id` is NULL and none of it is persisted
-   outside `agent_outputs`. Fix R2 before redesigning scoring.
+   outside `agent_outputs`. Fix R2 and R3 before redesigning scoring.
 2. The Aave override was wrong on this one occasion and the cost is measurable:
    a hard mandate exclusion on holder concentration produced a PASS on the
    cohort's best performer, +49.9 alpha at 30 days. **n = 1.** One override being
@@ -248,7 +314,7 @@ first — it costs nothing and would test the hypothesis.
 **S2 — Score the Devil's Advocate.** F8: it produced the corpus's most
 consequential error (dismissing the Aave buyback sixteen days before it shipped)
 at zero cost, sits 27 points below the composite by construction, and carries no
-weight. Scoring its counters would require R3 first — an unfalsifiable counter
+weight. Scoring its counters would require R4 first — an unfalsifiable counter
 cannot be graded either. Speculative because a Devil's Advocate that fears being
 wrong may stop being adversarial, which would destroy the thing it is for.
 

@@ -25,6 +25,7 @@ owner fix it.
 | `agent/security` | `docs/reviews/security-review.md` — report only, no code fixes |
 | `agent/qa` | `backend/tests/**` **except** `test_calibration.py` |
 | `agent/ui-report` | `backend/app/tpl.html`, `backend/app/api/reports.py`, `backend/app/static/**` |
+| `agent/retrieval` | `backend/app/knowledge/__init__.py`, `backend/app/api/knowledge.py`, `backend/app/tools/semantic.py`, `docs/reviews/retrieval-evaluation.md` |
 | orchestrator only | `README.md`, `AGENTS.md`, `PROJECT_DECISIONS.md`, `docs/CONTRACTS.md`, `AIIC_HANDOFF.md`, `.gitignore` |
 
 ---

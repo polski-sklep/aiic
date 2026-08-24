@@ -17,6 +17,7 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | QA | `agent/qa` | Independent test suite, adversarial testing | **In progress** |
 | Security | `agent/security` | Auth, injection, secrets, XSS review | **In progress** |
 | UI / Report | `agent/ui-report` | Report rendering surface, XSS fix, offline assets | **In progress** |
+| Retrieval | `agent/retrieval` | Keyword vs semantic retrieval evaluation, pgvector wiring | **In progress** |
 
 ## Ownership
 
@@ -29,6 +30,7 @@ See §1 of `docs/CONTRACTS.md` for the authoritative path→branch table. In sho
 - `agent/ui-report` — `tpl.html`, `api/reports.py`
 - `agent/qa` — `tests/**` except `test_calibration.py`
 - `agent/architecture` — `tools/contracts.py`, `tools/registry.py`, `docs/adr/`
+- `agent/retrieval` — `knowledge/__init__.py`, `api/knowledge.py`, `tools/semantic.py`
 - `agent/retrospective`, `agent/security` — documents only, no code
 
 Review agents report; owning agents fix. QA finding a calibration defect files it

@@ -21,10 +21,10 @@ gradeable at n = 6 and it is where the actionable findings are.
 
 | | |
 | --- | --- |
-| [`00-method.md`](00-method.md) | Sources, provenance proof, how alpha is computed, and eight contaminations to read before using any number |
+| [`00-method.md`](00-method.md) | Sources, provenance proof, how alpha is computed, and eleven contaminations to read before using any number |
 | [`01-per-project.md`](01-per-project.md) | The core: named risks vs. realised drivers, one section per project, with a HIT/MISS/PARTIAL/UNRESOLVED verdict |
-| [`02-findings.md`](02-findings.md) | Nine cross-cutting patterns, plus the assessment of the handoff's §6.5 structural finding |
-| [`03-recommendations.md`](03-recommendations.md) | Nine ranked recommendations naming specific artifacts, three speculative items, and what could not be established |
+| [`02-findings.md`](02-findings.md) | Ten cross-cutting patterns, plus the assessment of the handoff's §6.5 structural finding |
+| [`03-recommendations.md`](03-recommendations.md) | Ten ranked recommendations naming specific artifacts, three speculative items, and what could not be established |
 
 ## Results at a glance
 

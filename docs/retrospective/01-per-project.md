@@ -102,6 +102,17 @@ The mandate rule is the proximate cause. It is a hard, unweighted exclusion —
 at 73.5 — and it fired on a metric (holder concentration) with no established
 link to forward return, against a catalyst that was already public.
 
+One mechanical correction, because the obvious reading of "scored 77.2, returned
+PASS" is wrong. **The Chair never saw 77.2.** `_calc_score` runs *after* the
+Chair in `orchestrator.py`; the weighted score did not exist when the decision
+was taken, and the Chair's own score was parsed and discarded. What it had was
+the report writer's 73.5, which survived `chair.py`'s 6,000-character truncation
+at offset 2,446 and which it read and quoted. So this is not a judgment agent
+overruling a number — it is a number computed afterwards and filed in the ledger
+beside a decision it never touched. Six of the report's twenty-four sections
+were cut before the Chair read it, including the competitive landscape, on a
+case whose loudest bear argument was Morpho competition. See F10.
+
 **One caution, stated plainly: n = 1.** One override being wrong is not evidence
 that overrides are wrong. What this instance does establish is narrower and
 still actionable: the disagreement was real, it was reasoned, it was recorded in

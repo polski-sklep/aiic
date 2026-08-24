@@ -42,11 +42,28 @@ mechanism activates and the price responds. The upside branch is not modelled.
 This is also the mechanism behind the Aave miss. `tokenomics_analyst` scored Aave
 85 and never mentioned Aave Will Win; `governance_analyst` scored it 65 and
 discussed AWW exclusively as a legitimacy crisis. The same event, two agents, two
-frames, and no one holding both. Note carefully that this is **not** an argument
-against data-agent independence (`docs/CONTRACTS.md` §4.2): the information was
-not lost. It reached the synthesis layer intact, and the Devil's Advocate —
-which sees everything — explicitly stated the buyback thesis and rejected it.
-The failure is at adjudication, not at collection.
+frames, and no one holding both.
+
+Two things about that gap, and they pull in different directions.
+
+It is **not** an argument against data-agent independence
+(`docs/CONTRACTS.md` §4.2), because the information was not lost. It reached the
+synthesis layer intact, and the Devil's Advocate — which sees everything —
+explicitly stated the buyback thesis and rejected it. The failure is at
+adjudication, not at collection.
+
+But the personas were not describing an independent layer at all. Six of the
+eight data-agent `INTERFACES.md` files declare "Receives From" lists naming
+sibling data agents and list sibling outputs under "Optional Inputs" — Economics
+is told to expect "Governance analysis" that the runtime can never deliver
+(`00-method.md`, contamination 10). So the agent that owned value accrual was
+told governance context was an available input, while the agent holding the Aave
+Will Win facts had no path to it and no reason to think one was needed. That is a
+documented persona/runtime mismatch, live on this exact run. It is a **candidate
+mechanism, not a proven cause** — nothing in the outputs shows an agent declining
+to chase a fact because it expected a colleague to supply it. It is the first
+thing to rule out, and it is cheap to rule out: correct the interface files and
+see whether the frame gap survives.
 
 ## F3 — Liquidity and distribution are treated as risk-to-us, never as catalyst
 
@@ -165,6 +182,14 @@ returns `""` and `BaseAgent` falls back to `role_description`. A 15% weight on
 an unconstrained generic prompt is the most likely explanation for the bias, and
 it is the cheapest thing in this document to fix.
 
+`technical_analyst` is the same defect one folder over. `technical-analyst/`
+holds a single `SOUL.md` against four to six files for every peer and has no
+`INTERFACES.md`. Its scores across the corpus are 55, 28, 28, 32, 28, 44 —
+uniformly low, and on GEODNET it returned no analysis at all. It is excluded from
+scoring (`docs/CONTRACTS.md` §4.1), so this never touches the composite, but its
+output *is* piped to the Chair as `technical_entry_context`. What reaches the
+Chair on entry timing is thin because the persona behind it is thin.
+
 `devils_advocate` sits 27 points below the composite by design and carries zero
 weight — it is a rhetorical device, not an input. Which matters because of F8.
 
@@ -214,6 +239,56 @@ that is a mitigating fact for GEODNET and Plasma. It is *not* a mitigating fact
 for Aave, which ran through the API on 11 June with all fifteen agents returning
 full outputs.
 
+## F10 — The Chair decided before the score existed, and read 70% of the report
+
+Verified in the tree at the base commit, so true for all six evaluations.
+
+**The score does not exist when the Chair decides.** `orchestrator.py` runs the
+Chair, and only on the following lines builds the `scores` dict and computes
+`overall = self._calc_score(agent_results)`. The Chair's own score is parsed out
+of its output and then plays no part in the recommendation. So `overall_score`
+is not an input the Chair overrides — it is a number computed *afterwards*, from
+agents the Chair had already read individually, and then stored in the ledger
+beside the Chair's decision as though the two were commensurable. They never
+met.
+
+**The report reaches the Chair truncated by a raw character slice.** `chair.py`
+line 34:
+
+```python
+report_text = json.dumps(report, indent=2, default=str)[:6000] if report else "No report available"
+```
+
+On the Aave run the serialised report is 8,562 characters. The Chair saw 70% of
+it and lost six of twenty-four sections: `8_community_sentiment`,
+`12_maturation_analysis`, **`24_signposts_to_monitor`**,
+`7_competitive_landscape`, `6_technical_architecture` and
+`15_investment_thesis_alignment`.
+
+**Which six are lost is decided by the language model's key emission order, and
+is therefore non-deterministic and unlogged.** On this run the writer emitted
+sections in a scrambled order that happened to place `22_overall_score` at
+character 2,446 — so the score and recommendation survived, and the Chair
+correctly recorded `report_writer_recommendation: "WATCH"`. Re-serialise the
+same report in the numeric order its own key names imply and the cut falls
+between sections 16 and 17, taking the bear case, key risks, key opportunities,
+mandate compliance, score breakdown, overall score, recommendation and signposts
+with it. Same report, same code, eight sections of difference, decided by which
+order the model felt like emitting keys in.
+
+This corrects a claim that would otherwise be tempting: the truncation did *not*
+cause the Aave outcome. The Chair saw section 22 and quoted it. But the Chair
+also lost the competitive landscape section on a case whose loudest bear
+argument was Morpho competition, and lost the report writer's signposts before
+writing its own. And on any run where the writer emits in numeric order, the
+Chair adjudicates having never seen the score, the recommendation or the risk
+list.
+
+Both defects are cheap to fix and neither requires deciding anything about
+conviction: compute the score before the Chair runs and pass it in; truncate the
+report by dropping whole sections in a declared priority order, and log which
+were dropped.
+
 ---
 
 ## The §6.5 structural finding — held up, with one correction
@@ -247,8 +322,10 @@ boundary. The two exceptions are both `high`-confidence PASSes at the extremes
 **"One high-confidence judgment contradicted its own scoring (Aave)." —
 PARTIALLY REFUTED. Correct at the ledger, wrong about the Chair.** The handoff
 §3.1 frames this as a computed number being silently overridden by a judgment
-agent. That is not what happened. The Chair produced its own score of **73.5**
-(not 77.2 — it never sees `_calc_score`'s output as its own), recorded
+agent. That is not what happened, and F10 gives the mechanism: **the 77.2 did
+not exist yet.** `_calc_score` runs *after* the Chair. What the Chair had was the
+report writer's 73.5, which it read (section 22 survived the truncation at
+character 2,446) and acted on. It produced its own score of **73.5**, recorded
 `report_writer_recommendation: "WATCH"`, `risk_officer_approved_override: true`,
 an explicit `threshold_crossed`, an `override_reasoning`, and separate
 `objections_judged_fatal` and `objections_judged_non_fatal` lists. This is a
@@ -264,6 +341,15 @@ unrecorded. And for the five records that did not run through the API, the trace
 does not exist at all.
 
 So §6.5's conclusion stands and is if anything understated. Its diagnosis of the
-Aave case needs correcting before it drives a design decision: the problem is
-not that the Chair overrides without reason. It is that the system throws the
-reason away.
+Aave case needs correcting on two counts before it drives a design decision.
+The problem is not that the Chair overrides a score without reason — there was
+no score to override, and the reason was recorded in full. The problems are that
+the system computes a number after the fact, stores it in the ledger beside a
+decision it never informed, and then throws the reasoning away.
+
+That distinction matters for what gets built. "Replace cardinal scoring with
+ordinal conviction tiers" is a response to a Chair that ignores its own score.
+This Chair never received one. Sequencing the score before the Chair (F10) and
+persisting the trace (R2) are prerequisites to knowing whether the cardinal
+score is even the problem — and both are cheap, whereas redesigning decision
+semantics is not.

@@ -13,7 +13,7 @@ convictions, and whatever you retrieve yourself.
 
 ## Required Inputs
 - Current case definition
-- Context pack
+- Prior knowledge you retrieve via search_notes
 - Relevant entity and jurisdiction information
 - Token, protocol, proposal, or transaction structure
 - Relevant disclosures, terms, or documentation

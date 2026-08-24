@@ -14,7 +14,7 @@ convictions, and whatever you retrieve yourself.
 
 ## Required Inputs
 - Current case definition
-- Context pack
+- Prior knowledge you retrieve via search_notes
 - Relevant on-chain evidence where applicable
 - Market, protocol, or proposal structure
 - Competitive context where relevant

@@ -1,0 +1,22 @@
+-- 0001_baseline.sql — NO-OP BASELINE. Creates nothing, alters nothing.
+--
+-- The production volume (committee-orchestrator_pgdata) already holds all nine
+-- tables and live data, including the only copy of the calibration ledger.
+-- `init.sql` runs only when Postgres initialises an empty data directory, so it
+-- has not run against that volume since it was created and never will again.
+--
+-- This migration exists solely so that `schema_migrations` has a defined
+-- starting point on BOTH paths:
+--
+--   * fresh volume  -> init.sql builds the schema, then this stamps it
+--   * live volume   -> the schema is already there, this stamps it
+--
+-- Applying it is therefore safe and identical in both cases. Everything from
+-- 0002 onwards is a real forward change.
+--
+-- Schema stamped here (as of 24 Aug 2026, verified against the live database):
+--   projects, evaluations, agent_outputs, reports, learnings, transcripts,
+--   portfolio, knowledge_chunks, calibration_records
+--   extensions: vector, uuid-ossp
+
+SELECT 1;

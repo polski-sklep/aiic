@@ -1,13 +1,12 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 import httpx
 
 from app.llm import JSONValue, SourceReference, ToolDefinition
-from app.tools.registry import ToolArguments
+from app.tools.contracts import ToolRegistrar
+from app.utils.types import ToolArguments
 
-if TYPE_CHECKING:
-    from app.tools.registry import ToolRegistry
 
 BASE_URL = "https://api.llama.fi"
 
@@ -138,7 +137,7 @@ async def get_protocol_fees(args: ToolArguments) -> ProtocolFeesResult | ToolErr
     }
 
 
-def register(registry: ToolRegistry) -> None:
+def register(registry: ToolRegistrar) -> None:
     registry.register(
         ToolDefinition(
             name="get_tvl",

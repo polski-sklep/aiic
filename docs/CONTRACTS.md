@@ -25,6 +25,8 @@ owner fix it.
 | `agent/security` | `docs/reviews/security-review.md` — report only, no code fixes |
 | `agent/qa` | `backend/tests/**` **except** `test_calibration.py` |
 | `agent/ui-report` | `backend/app/tpl.html`, `backend/app/api/reports.py`, `backend/app/static/**` |
+| `agent/retrieval` | `backend/app/knowledge/__init__.py`, `backend/app/api/knowledge.py`, `backend/app/tools/semantic.py`, `docs/reviews/retrieval-evaluation.md` |
+| `agent/core` | `backend/app/main.py`, `backend/app/agents/orchestrator.py`, `backend/app/agents/chair.py`, `backend/app/utils/types.py`, `backend/app/api/memory.py`, `backend/migrations/0003_*.sql` |
 | orchestrator only | `README.md`, `AGENTS.md`, `PROJECT_DECISIONS.md`, `docs/CONTRACTS.md`, `AIIC_HANDOFF.md`, `.gitignore` |
 
 ---
@@ -34,29 +36,36 @@ owner fix it.
 These were checked against the live runtime on 24 Aug 2026. Several **contradict
 the handoff brief** — the runtime wins.
 
-### 2.1 Persona slug map is already definitive
+### 2.1 Persona map — RESOLVED, and it hid two defects
 
 `backend/app/memory/agent_personas.py::AGENT_FOLDERS` is the authoritative
-class→folder map. §2.1 of the handoff is resolved. The map:
+class→folder map. Handoff §2.1 is resolved. Both defects it concealed are fixed
+on `integration` (merge of `agent/personas`):
 
-```
-tokenomics_analyst  -> economics          governance_analyst -> gov-analyst
-technical_analyst   -> technical-analyst  onchain_analyst    -> onchain-analyst
-competitive_intel   -> competitive-intel  field_intel        -> fed-intelligence
-legal_regulatory    -> legal-analyst      risk_officer       -> risk-officer
-maturation_scorer   -> valuation-scorer   devils_advocate    -> devils-advocate
-portfolio_manager   -> portfolio-manager  report_writer      -> report-writer
-ray_dalio           -> ray-judge          committee_chair    -> governance-chief
-```
+- `tech_infra_analyst` was **absent from the map**. One of two agents carrying
+  the joint-highest score weight (0.15) ran with no persona at all —
+  `load_agent_persona` returned `""` and `BaseAgent` fell back to its
+  one-paragraph `role_description`. It now has a five-file persona.
+- `knowledge-agent/` was an orphan mapped to no class. Archived under
+  `backend/app/memory/archive/`, not deleted — it is the ready-made spec if the
+  retrieval layer ever gets a seat.
 
-**Two defects follow from it:**
+Current state, verified in the container: **15 agents mapped, 15 folders, no
+`MISSING`, one-to-one.**
 
-- `tech_infra_analyst` is **absent from the map**. It is one of two agents
-  carrying the joint-highest score weight (0.15) and it runs with **no persona**
-  — `load_agent_persona` returns `""` and `BaseAgent` silently falls back to
-  `role_description`. Owned by `agent/personas`.
-- `knowledge-agent/` is an **orphan folder** — 6 files, mapped to no class,
-  loaded by nothing.
+### 2.1a Data-agent independence was being contradicted at runtime
+
+`docs/CONTRACTS.md` §4.2 and the handoff both state the eight data agents must
+not see each other's output — that diversity is the design. **Six of the eight
+personas were telling the agents the opposite**, listing sibling data agents
+under "Receives From" and offering their output as available inputs. This was
+live on every paid call.
+
+Fixed. It bears directly on the concordance result in handoff §10 (80%
+recommendation match between eight specialists and one generalist): personas
+that instruct agents to converge are a plausible partial cause of measured
+convergence. The experiment's conclusion should not be treated as settled while
+that contamination is unaccounted for.
 
 ### 2.2 pgvector is NOT inert — the handoff §5 is wrong
 
@@ -102,6 +111,27 @@ deduplicated risks, written by `orchestrator._notion_write`. Verified page ids:
 | Ethena | `3830a58c-96ec-8116-80ba-cb7ee0933c71` |
 | Morpho | `3830a58c-96ec-8162-8c35-f6cd3cb04b6a` |
 | Pendle | `3830a58c-96ec-8170-a0dc-cfd96f5314e7` |
+
+### 2.7 A CoinGecko 429 is indistinguishable from missing data
+
+Verified by direct probe on 24 Aug 2026. The free tier returns **HTTP 200** with
+no `market_data` key when rate-limited:
+
+```json
+{"status":{"error_code":429,"error_message":"You've exceeded the Rate Limit. ..."}}
+```
+
+Code that branches on `if "market_data" not in data` will record a rate limit as
+"the coin did not exist on that date". Any consumer must check `status.error_code`
+**before** checking `market_data`, and must distinguish three outcomes — price
+found, no data for that date, fetch failed — never collapsing the last two.
+
+The limit is tighter than expected: 429 on the **fourth** call at 8-second
+spacing. Sleep 15–20s and cache responses to disk.
+
+The historical endpoint itself works keyless and is confirmed good:
+`GET /coins/{id}/history?date=DD-MM-YYYY&localization=false` →
+`market_data.current_price.usd`.
 
 ### 2.6 Live calibration ledger (do not mutate without orchestrator approval)
 

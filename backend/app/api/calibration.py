@@ -1,11 +1,16 @@
 """Calibration endpoints for inspecting and updating recommendation scorecards."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import logging
+from datetime import date, datetime, timedelta, timezone
+
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text as sql_text
 
 from app.database import async_session
-from app.knowledge.calibration import get_scorecard, update_checkpoint
+from app.knowledge.calibration import VALID_HORIZONS, get_scorecard, update_checkpoint
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/calibration", tags=["calibration"])
 
@@ -58,8 +63,36 @@ async def list_records(limit: int = 50):
 
 
 @router.post("/checkpoint/{record_id}/{horizon_days}")
-async def trigger_checkpoint(record_id: str, horizon_days: int):
-    result = await update_checkpoint(record_id, horizon_days)
+async def trigger_checkpoint(
+    record_id: str,
+    horizon_days: int,
+    as_of: date | None = Query(
+        default=None,
+        description=(
+            "Observation date, YYYY-MM-DD. Defaults to entry_captured_at + "
+            "horizon_days. The price is always fetched as of this date, never spot."
+        ),
+    ),
+):
+    """Record the horizon-N checkpoint for a calibration record.
+
+    The price is fetched as of the target date (default:
+    ``entry_captured_at + horizon_days``), never as spot, and
+    ``checked_{N}d_at`` is written with that true observation date. A target
+    date in the future is rejected and nothing is written.
+    """
+    if horizon_days not in VALID_HORIZONS:
+        raise HTTPException(status_code=400, detail="horizon must be 30, 90, or 180")
+
+    try:
+        result = await update_checkpoint(record_id, horizon_days, as_of)
+    except ValueError:
+        # e.g. record_id is not a UUID
+        raise HTTPException(status_code=400, detail="record_id must be a UUID")
+    except Exception:
+        logger.exception("Checkpoint update failed for record %s", record_id)
+        raise HTTPException(status_code=500, detail="Checkpoint update failed")
+
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -67,12 +100,22 @@ async def trigger_checkpoint(record_id: str, horizon_days: int):
 
 @router.get("/pending")
 async def pending_checkpoints():
+    """Checkpoints whose target date has passed and which have no price yet.
+
+    Checkpoints are date anchored: horizon N is due once
+    ``entry_captured_at + N days`` is in the past. A record that is 67 days old
+    with no 30d price is reported as due for its **30-day** mark, with
+    ``target_date`` naming the day that must be observed and ``days_overdue``
+    saying how late it is. Passing that ``target_date`` back as
+    ``?as_of=`` to the checkpoint endpoint reproduces the correct historical
+    observation.
+    """
+    today = datetime.now(timezone.utc).date()
     async with async_session() as session:
         result = await session.execute(
             sql_text(
                 """
                 SELECT id, project_name, recommendation, entry_captured_at,
-                       EXTRACT(DAY FROM (NOW() - entry_captured_at)) as days_elapsed,
                        price_30d, price_90d, price_180d
                 FROM calibration_records
                 WHERE entry_captured_at IS NOT NULL
@@ -82,22 +125,31 @@ async def pending_checkpoints():
         )
         pending = []
         for row in result.fetchall():
-            days_elapsed = int(row[4]) if row[4] is not None else 0
-            checkpoints_due: list[int] = []
-            if days_elapsed >= 30 and row[5] is None:
-                checkpoints_due.append(30)
-            if days_elapsed >= 90 and row[6] is None:
-                checkpoints_due.append(90)
-            if days_elapsed >= 180 and row[7] is None:
-                checkpoints_due.append(180)
+            entry_at = row[3]
+            entry_day = entry_at.astimezone(timezone.utc).date() if entry_at.tzinfo else entry_at.date()
+            prices = {30: row[4], 90: row[5], 180: row[6]}
+
+            checkpoints_due = []
+            for horizon in VALID_HORIZONS:
+                target = entry_day + timedelta(days=horizon)
+                if target <= today and prices[horizon] is None:
+                    checkpoints_due.append(
+                        {
+                            "horizon_days": horizon,
+                            "target_date": target.isoformat(),
+                            "days_overdue": (today - target).days,
+                        }
+                    )
+
             if checkpoints_due:
                 pending.append(
                     {
                         "id": str(row[0]),
                         "project_name": row[1],
                         "recommendation": row[2],
-                        "days_elapsed": days_elapsed,
+                        "entry_captured_at": entry_at,
+                        "days_since_entry": (today - entry_day).days,
                         "checkpoints_due": checkpoints_due,
                     }
                 )
-        return {"pending": pending, "count": len(pending)}
+        return {"pending": pending, "count": len(pending), "as_of": today.isoformat()}

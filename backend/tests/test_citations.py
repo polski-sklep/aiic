@@ -21,6 +21,7 @@ from app.utils.citations import (
     make_source,
     normalize_footnotes,
     reindex_citations,
+    UNRESOLVED_CITATION,
 )
 
 
@@ -67,7 +68,6 @@ class MergeAcrossAgentsTest(unittest.TestCase):
         )
         self.assertEqual(merged[0]["supports"], "quarterly revenue")
 
-    @unittest.expectedFailure
     def test_QA_001_citation_without_footnotes_must_not_inherit_another_agents_source(self):
         """QA-001 (HIGH): reindex_citations early-returns when footnotes is empty.
 
@@ -87,7 +87,6 @@ class MergeAcrossAgentsTest(unittest.TestCase):
 
         self.assertNotIn("[1]", orphan_text)
 
-    @unittest.expectedFailure
     def test_QA_002_dangling_citation_must_not_become_a_valid_wrong_reference(self):
         """QA-002 (HIGH): unmapped ids are left verbatim and go on to resolve.
 
@@ -108,7 +107,6 @@ class MergeAcrossAgentsTest(unittest.TestCase):
         # a source agent A never saw.
         self.assertNotIn("[3]", text_a)
 
-    @unittest.expectedFailure
     def test_QA_003_duplicate_local_ids_must_not_silently_repoint_the_citation(self):
         """QA-003 (MED): ``mapping[footnote["id"]]`` is overwritten by the last duplicate.
 
@@ -122,7 +120,6 @@ class MergeAcrossAgentsTest(unittest.TestCase):
 
         self.assertEqual(text, "Claim [1].", "citation was repointed at the duplicate")
 
-    @unittest.expectedFailure
     def test_QA_006_bracketed_numbers_in_prose_must_not_be_rewritten(self):
         """QA-006 (MED): INLINE_CITATION_RE matches any [digits].
 
@@ -161,7 +158,6 @@ class FootnoteNormalisationTest(unittest.TestCase):
         )
         self.assertEqual([item["id"] for item in out], [1, 3])
 
-    @unittest.expectedFailure
     def test_QA_009_float_and_bool_ids_must_not_be_coerced_into_collisions(self):
         """QA-009 (LOW): ``int(item.get("id"))`` truncates 1.9 to 1 and True to 1.
 
@@ -189,7 +185,6 @@ class UrlNormalisationTest(unittest.TestCase):
         for value in (None, "", 0, False, []):
             self.assertEqual(_normalize_url(value), "")
 
-    @unittest.expectedFailure
     def test_QA_004_non_url_footnote_targets_must_be_rejected(self):
         """QA-004 (MED): any non-empty string survives _normalize_url.
 
@@ -202,18 +197,29 @@ class UrlNormalisationTest(unittest.TestCase):
         for junk in ("N/A", "n/a", "internal knowledge", "none", "TBD"):
             self.assertEqual(_normalize_url(junk), "", f"{junk!r} was accepted as a URL")
 
-    def test_QA_004_repro_two_agents_unsourced_claims_merge(self):
-        """Characterisation of QA-004: this is what actually happens today."""
+    def test_QA_004_unsourced_claims_from_two_agents_stay_separate_and_unsourced(self):
+        """QA-004 end to end, now fixed.
+
+        This was a characterisation test asserting the defect: "N/A" and "n/a"
+        from two different agents merged into a single footnote carrying only
+        the first agent's label, so two unrelated unsourced claims shared one
+        fabricated citation. Rewritten to assert the behaviour that replaced it.
+
+        Neither junk target registers a footnote, and each agent's marker
+        becomes UNRESOLVED_CITATION -- so the reader still sees that evidence
+        was claimed, and no number is produced that a later merge could resolve.
+        """
         merged: list[dict[str, object]] = []
-        _, merged = reindex_citations(
+        text_a, merged = reindex_citations(
             "a [1]", normalize_footnotes(fn(1, "N/A", label="tokenomics reasoning")), merged
         )
-        _, merged = reindex_citations(
+        text_b, merged = reindex_citations(
             "b [1]", normalize_footnotes(fn(1, "n/a", label="legal reasoning")), merged
         )
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0]["label"], "tokenomics reasoning")
-        self.assertEqual(merged[0]["url"], "N/A")
+
+        self.assertEqual(merged, [])
+        self.assertEqual(text_a, f"a {UNRESOLVED_CITATION}")
+        self.assertEqual(text_b, f"b {UNRESOLVED_CITATION}")
 
 
 class DedupeSourcesTest(unittest.TestCase):
@@ -235,7 +241,6 @@ class DedupeSourcesTest(unittest.TestCase):
         )
         self.assertEqual(len(out), 1)
 
-    @unittest.expectedFailure
     def test_QA_005_dedupe_key_must_not_lowercase_the_path(self):
         """QA-005 (MED): ``key = url.lower()`` lowercases the whole URL.
 
@@ -251,7 +256,6 @@ class DedupeSourcesTest(unittest.TestCase):
         )
         self.assertEqual(len(out), 2, "distinct case-sensitive paths were merged")
 
-    @unittest.expectedFailure
     def test_QA_005_dedupe_must_collapse_trailing_slash_and_fragment(self):
         """QA-005 (MED), other direction: no path/fragment normalisation.
 
@@ -270,7 +274,6 @@ class DedupeSourcesTest(unittest.TestCase):
 
 
 class MergedListInvariantTest(unittest.TestCase):
-    @unittest.expectedFailure
     def test_QA_007_reindex_must_not_assume_merged_ids_equal_position(self):
         """QA-007 (LOW/MED): the function has an undocumented precondition.
 
@@ -284,7 +287,6 @@ class MergedListInvariantTest(unittest.TestCase):
         _, merged = reindex_citations("x [1]", normalize_footnotes(fn(1, "https://new.example")), merged)
         self.assertEqual([m["id"] for m in merged], list(range(1, len(merged) + 1)))
 
-    @unittest.expectedFailure
     def test_QA_008_raw_footnotes_must_not_raise(self):
         """QA-008 (LOW): reindex_citations does ``footnote["url"]`` unguarded.
 
@@ -324,7 +326,6 @@ class ToolResultSourceExtractionTest(unittest.TestCase):
         )
         self.assertEqual(out, [])
 
-    @unittest.expectedFailure
     def test_QA_031_all_null_price_result_must_not_produce_a_citation(self):
         """QA-031 (MED): the only failure signal checked is ``result.get("error")``.
 

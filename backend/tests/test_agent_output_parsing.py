@@ -79,7 +79,6 @@ class ParseOutputTest(unittest.TestCase):
 
     # --- defects --------------------------------------------------------------
 
-    @unittest.expectedFailure
     def test_QA_010_unterminated_code_fence_must_not_destroy_the_payload(self):
         """QA-010 (HIGH): ``lines[1:-1]`` assumes a closing fence exists.
 
@@ -93,7 +92,6 @@ class ParseOutputTest(unittest.TestCase):
         out = self.parse('```json\n{\n "score": 85,\n "confidence": "high"\n}')
         self.assertEqual(out.get("score"), 85)
 
-    @unittest.expectedFailure
     def test_QA_011_preamble_containing_a_brace_must_not_defeat_recovery(self):
         """QA-011 (MED): recovery spans find("{") .. rfind("}") over the whole text.
 
@@ -103,7 +101,6 @@ class ParseOutputTest(unittest.TestCase):
         out = self.parse('I will respond in the shape {field: value}: {"score": 85}')
         self.assertEqual(out.get("score"), 85)
 
-    @unittest.expectedFailure
     def test_QA_011_trailing_prose_containing_a_brace_must_not_defeat_recovery(self):
         """QA-011 (MED), the common half.
 
@@ -114,16 +111,18 @@ class ParseOutputTest(unittest.TestCase):
         out = self.parse('{"score": 85}\nNote: I used {search_notes} for prior context.')
         self.assertEqual(out.get("score"), 85)
 
-    @unittest.expectedFailure
-    def test_QA_011_two_objects_should_prefer_the_first_complete_one(self):
-        """QA-011 (MED): a model that emits an example then the real answer.
+    def test_QA_011_two_objects_recover_the_first_complete_one(self):
+        """QA-011 (was MED, fixed): a model that emits an example then the answer.
 
-        rfind spans both, so neither is recovered.
+        rfind used to span both, so neither was recovered. The replacement scans
+        for balanced objects and yields them first-one-first, so recovery is
+        deterministic. Asserting *which* object comes back, not merely that one
+        does -- the first is what _balanced_object_candidates documents, and a
+        change to last-wins would otherwise pass silently.
         """
         out = self.parse('{"score": 0, "summary": "example"}\n{"score": 85, "summary": "real"}')
-        self.assertIn("score", out)
+        self.assertEqual(out, {"score": 0, "summary": "example"})
 
-    @unittest.expectedFailure
     def test_QA_012_deeply_nested_input_must_not_raise(self):
         """QA-012 (MED): only json.JSONDecodeError is caught.
 
@@ -135,7 +134,6 @@ class ParseOutputTest(unittest.TestCase):
         out = self.parse("[" * 200_000)
         self.assertIn("parse_error", out)
 
-    @unittest.expectedFailure
     def test_QA_012_non_string_input_must_not_raise(self):
         """QA-012 (MED): ``raw_text.strip()`` assumes str.
 
@@ -177,7 +175,6 @@ class ExtractScoreTest(unittest.TestCase):
 
     # --- defects --------------------------------------------------------------
 
-    @unittest.expectedFailure
     def test_QA_013_nan_must_not_be_accepted_as_a_score(self):
         """QA-013 (HIGH): NaN reaches the weighted average and poisons it.
 
@@ -188,13 +185,11 @@ class ExtractScoreTest(unittest.TestCase):
         """
         self.assertIsNone(self.score(json.loads('{"score": NaN}')["score"]))
 
-    @unittest.expectedFailure
     def test_QA_013_infinity_must_not_be_accepted_as_a_score(self):
         """QA-013 (HIGH): 1e400 in JSON parses to inf; "infinity" as a string does too."""
         self.assertIsNone(self.score(json.loads('{"score": 1e400}')["score"]))
         self.assertIsNone(self.score("infinity"))
 
-    @unittest.expectedFailure
     def test_QA_013_out_of_range_scores_must_be_rejected_or_clamped(self):
         """QA-013 (HIGH): the prompt says 0-100; nothing enforces it.
 
@@ -205,7 +200,6 @@ class ExtractScoreTest(unittest.TestCase):
         for value in (-1, 101, 8500, -100.0):
             self.assertIsNone(self.score(value), f"{value} was accepted as a 0-100 score")
 
-    @unittest.expectedFailure
     def test_QA_013_booleans_must_not_become_scores(self):
         """QA-013 (HIGH): float(True) is 1.0, float(False) is 0.0.
 

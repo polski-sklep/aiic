@@ -121,28 +121,6 @@ class CoinGeckoBodyLevelRateLimitTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(body_rate_limited(self.RATE_LIMITED_BODY))
         self.assertFalse(body_rate_limited({"aave": {"usd": 63.0}}))
 
-    async def test_QA_042_body_level_429_reaches_get_price_unretried(self):
-        """Characterisation of QA-042: this is what happens today.
-
-        One request, no retries, and the rate limit is reported to the agent as
-        "Coin 'aave' not found. Use CoinGecko coin ID ...".
-        """
-        from app.tools import coingecko
-
-        attempts = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            attempts.append(1)
-            return httpx.Response(200, json=self.RATE_LIMITED_BODY)
-
-        with mock_http(handler), instant_sleep() as delays:
-            result = await coingecko.get_price({"coin_id": "aave"})
-
-        self.assertEqual(len(attempts), 1, "a body-level 429 does not enter the retry ladder")
-        self.assertEqual(delays, [])
-        self.assertIn("not found", result["error"])
-
-    @unittest.expectedFailure
     async def test_QA_042_get_price_must_not_report_a_rate_limit_as_coin_not_found(self):
         """QA-042 (HIGH): a quota error is reported as a nonexistent token.
 
@@ -165,7 +143,6 @@ class CoinGeckoBodyLevelRateLimitTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("not found", result["error"])
         self.assertIn("rate limit", result["error"].lower())
 
-    @unittest.expectedFailure
     async def test_QA_042_get_token_info_must_not_return_a_null_success(self):
         """QA-042 (HIGH), the worse half: get_token_info reports success.
 
@@ -183,7 +160,6 @@ class CoinGeckoBodyLevelRateLimitTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("error", result)
 
-    @unittest.expectedFailure
     async def test_QA_042_body_level_429_must_be_retried_like_an_http_429(self):
         """QA-042 (HIGH): it is the same quota, so it deserves the same ladder."""
         from app.tools import coingecko
@@ -246,7 +222,6 @@ class CoinGeckoArgumentTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["market_cap_usd"])
         self.assertIsNone(result["genesis_date"])
 
-    @unittest.expectedFailure
     async def test_QA_032_a_null_coin_id_must_not_become_a_live_query_for_none(self):
         """QA-032 (LOW): ``str(args.get("coin_id", ""))`` stringifies None to "none".
 
@@ -269,7 +244,6 @@ class CoinGeckoArgumentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [], "a request was issued for a null coin_id")
         self.assertIn("error", result)
 
-    @unittest.expectedFailure
     async def test_QA_031_an_unavailable_currency_must_be_an_error_not_a_null_success(self):
         """QA-031 (MED): a fully-null price envelope is returned with no error key.
 
@@ -353,7 +327,6 @@ class BinanceTest(unittest.IsolatedAsyncioTestCase):
             result = await binance.compute_technical_levels({"symbol": "AAVEUSDT"})
         self.assertIn("Insufficient data", result["error"])
 
-    @unittest.expectedFailure
     async def test_QA_030_a_400_must_not_be_reported_as_symbol_not_found(self):
         """QA-030 (MED): every 400 is translated to "symbol not found".
 
@@ -374,7 +347,6 @@ class BinanceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("not found on Binance", result["error"])
 
-    @unittest.expectedFailure
     async def test_QA_033_limit_arguments_must_be_validated(self):
         """QA-033 (LOW): ``isinstance(requested_limit, int | float)`` lets bool through
         and silently discards a numeric string.
@@ -417,7 +389,6 @@ class ErrorShapeConsistencyTest(unittest.IsolatedAsyncioTestCase):
             result = await defillama.get_protocol_fees({"protocol": "nope"})
         self.assertIn("No fee data available", result["error"])
 
-    @unittest.expectedFailure
     async def test_QA_029_get_tvl_must_handle_http_status_itself(self):
         """QA-029 (HIGH): get_tvl calls raise_for_status() with no handling at all.
 
@@ -439,7 +410,6 @@ class ErrorShapeConsistencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result)
         self.assertNotIn("Tool execution failed", result["error"])
 
-    @unittest.expectedFailure
     async def test_QA_028_web_search_must_distinguish_rate_limits_from_no_results(self):
         """QA-028 (HIGH): web_search has no status handling either.
 
@@ -455,7 +425,6 @@ class ErrorShapeConsistencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result)
         self.assertIn("rate limit", result["error"].lower())
 
-    @unittest.expectedFailure
     async def test_QA_028_twitter_must_handle_statuses_it_does_not_enumerate(self):
         """QA-028 (HIGH): search_twitter handles 401/429/400 and nothing else.
 
@@ -491,7 +460,6 @@ class ErrorShapeConsistencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["tweet_count"], 0)
         self.assertNotIn("error", result)
 
-    @unittest.expectedFailure
     async def test_QA_035_registry_error_strings_must_not_embed_the_request_url(self):
         """QA-035 (LOW): the registry stringifies the httpx exception verbatim.
 
@@ -543,7 +511,6 @@ class NotionToolsTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(await notion_tools.read_note({}), {"error": "page_id is required"})
 
-    @unittest.expectedFailure
     async def test_QA_034_search_notes_must_not_claim_a_database_it_did_not_search(self):
         """QA-034 (MED): the requested database is echoed back regardless.
 

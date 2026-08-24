@@ -41,7 +41,6 @@ class ReconcileWorksTest(unittest.TestCase):
 
 
 class ReconcileDefectsTest(unittest.TestCase):
-    @unittest.expectedFailure
     def test_QA_019_the_same_metric_under_different_nesting_must_be_compared(self):
         """QA-019 (HIGH): metrics are grouped by their full flattened path.
 
@@ -64,7 +63,6 @@ class ReconcileDefectsTest(unittest.TestCase):
         )
         self.assertEqual(out["inconsistencies_found"], 1, "a 9x TVL disagreement was reported as CLEAN")
 
-    @unittest.expectedFailure
     def test_QA_020_flagging_must_not_depend_on_agent_ordering(self):
         """QA-020 (HIGH): _relative_divergence is |a-b|/a -- asymmetric.
 
@@ -78,7 +76,6 @@ class ReconcileDefectsTest(unittest.TestCase):
         reverse = reconcile_data({"b": {"tvl": 125.0}, "a": {"tvl": 100.0}}, CTX)["inconsistencies_found"]
         self.assertEqual(forward, reverse, f"order-dependent: {forward} vs {reverse}")
 
-    @unittest.expectedFailure
     def test_QA_021_booleans_must_not_be_treated_as_metric_values(self):
         """QA-021 (MED): ``isinstance(val, (int, float))`` is True for bool.
 
@@ -92,7 +89,6 @@ class ReconcileDefectsTest(unittest.TestCase):
         )
         self.assertEqual(out["inconsistencies_found"], 0)
 
-    @unittest.expectedFailure
     def test_QA_022_common_market_cap_spellings_must_be_grouped(self):
         """QA-022 (MED): _extract_metrics whitelists the literal "market_cap".
 
@@ -105,7 +101,6 @@ class ReconcileDefectsTest(unittest.TestCase):
         )
         self.assertEqual(out["inconsistencies_found"], 1)
 
-    @unittest.expectedFailure
     def test_QA_022_numeric_strings_must_be_reconciled(self):
         """QA-022 (MED): LLMs routinely emit numbers as strings.
 
@@ -115,7 +110,6 @@ class ReconcileDefectsTest(unittest.TestCase):
         out = reconcile_data({"a": {"tvl": "100"}, "b": {"tvl": "99999"}}, CTX)
         self.assertEqual(out["inconsistencies_found"], 1)
 
-    @unittest.expectedFailure
     def test_QA_022_metrics_nested_in_lists_must_be_reconciled(self):
         """QA-022 (MED): _flatten descends into dicts only, never lists.
 
@@ -145,7 +139,6 @@ class CaseContextTest(unittest.TestCase):
         self.assertTrue(all(v is None for v in ctx["canonical_metrics"].values()))
         self.assertEqual(ctx["project_name"], "Aave")
 
-    @unittest.expectedFailure
     def test_QA_023_null_prefetch_blocks_must_not_crash(self):
         """QA-023 (MED): same ``.get(key, {})`` vs explicit None defect as QA-015.
 

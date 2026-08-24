@@ -92,7 +92,6 @@ class GateBlocksWhatItShouldTest(unittest.IsolatedAsyncioTestCase):
 
 
 class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
-    @unittest.expectedFailure
     async def test_QA_014_min_age_gate_must_fire_on_real_coingecko_dates(self):
         """QA-014 (HIGH): the 90-day minimum-age gate is dead against live data.
 
@@ -119,7 +118,6 @@ class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.checks["min_age"]["age_days"], 23)
 
-    @unittest.expectedFailure
     async def test_QA_015_null_prefetch_blocks_must_not_crash_the_gate(self):
         """QA-015 (HIGH): ``.get(key, {})`` does not defend against an explicit None.
 
@@ -133,7 +131,6 @@ class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.passed)
 
-    @unittest.expectedFailure
     async def test_QA_016_zero_market_cap_must_block(self):
         """QA-016 (MED): ``if market_cap and market_cap < 1_000_000`` -- 0 is falsy.
 
@@ -147,14 +144,12 @@ class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.passed)
 
-    @unittest.expectedFailure
     async def test_QA_017_string_market_cap_must_not_crash(self):
         """QA-017 (MED): no type coercion before the numeric comparison."""
         await run_structural_gate(
             {"coingecko_id": "x", "_price_data": {"market_cap": "500000"}, "_token_data": {}}
         )
 
-    @unittest.expectedFailure
     async def test_QA_017_list_category_must_not_crash(self):
         """QA-017 (MED): CoinGecko's field is ``categories``, a list.
 
@@ -166,7 +161,6 @@ class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
             {"coingecko_id": "x", "category": ["Meme", "Solana Ecosystem"], "_price_data": {}, "_token_data": {}}
         )
 
-    @unittest.expectedFailure
     async def test_QA_017_non_string_genesis_must_not_crash(self):
         """QA-017 (MED): ``genesis.replace(...)`` raises AttributeError on an int.
 
@@ -177,7 +171,6 @@ class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
             {"coingecko_id": "x", "_price_data": {}, "_token_data": {"genesis_date": 1600000000}}
         )
 
-    @unittest.expectedFailure
     async def test_QA_018_mandate_exclusion_must_consider_coingecko_categories(self):
         """QA-018 (MED): the exclusion reads one caller-supplied free-text field.
 
@@ -195,7 +188,6 @@ class GateDefectsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.passed, "a memecoin cleared the mandate exclusion")
 
-    @unittest.expectedFailure
     async def test_QA_015_missing_project_info_must_not_crash(self):
         """QA-015 (HIGH), same root: None instead of a dict."""
         await run_structural_gate(None)

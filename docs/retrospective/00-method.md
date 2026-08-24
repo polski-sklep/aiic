@@ -179,3 +179,48 @@ that cross-check is unavailable the attribution is weaker and is labelled
 **8. n = 6, of which 4 are the same recommendation issued on the same day by
 the same batch.** Nothing here supports a claim about the committee's skill.
 Everything here is about which *variables* it looks at.
+
+**9. The Chair decided before the score existed, and read a truncated report.**
+Verified in the tree at the base commit, so true for every run in this corpus.
+`orchestrator.py` runs the Chair, and only then computes
+`overall = self._calc_score(agent_results)` — the weighted score does not exist
+when the Chair decides, and the Chair's own score is parsed and discarded.
+Separately, `chair.py:34` hands the Chair
+`json.dumps(report, indent=2, default=str)[:6000]` — a raw character slice of
+the serialised 24-section report. On the Aave run that report serialises to 8,562
+characters, so the Chair saw **70% of it and lost six of twenty-four sections**.
+This is contamination, not exoneration: F10 in `02-findings.md` records what was
+lost and why the loss is non-deterministic.
+
+**10. Six of the eight data-agent personas document peer inputs the runtime never
+delivers.** `economics`, `gov-analyst`, `onchain-analyst`, `competitive-intel`,
+`fed-intelligence` and `legal-analyst` each carry an `INTERFACES.md` whose
+"Receives From" list names sibling *data* agents — Economics receives from
+On-Chain Analyst and Competitive Intel; Gov Analyst from On-Chain Analyst,
+Economics and Competitive Intel — and whose "Optional Inputs" name sibling
+outputs ("Governance analysis", "On-chain evidence", "Tokenomics framing"). The
+two exceptions are `technical-analyst`, which has no `INTERFACES.md`, and
+`tech_infra_analyst`, which has no persona at all.
+
+The eight run in parallel and cannot see each other (`docs/CONTRACTS.md` §4.2).
+So the contamination is not that they shared data — it is that **each agent was
+told colleagues' findings were available to it, and then received none.** An
+agent that believes governance analysis is arriving from elsewhere has a reason
+not to chase it itself. This is a documented mismatch between persona and
+runtime, live on every paid call including the six evaluated here. Whether any
+agent actually relied on the promised input cannot be established from the
+outputs; it is a candidate mechanism, flagged in F2, not a proven cause.
+
+It also bears on `AIIC_HANDOFF.md` §10. If eight specialists are each written as
+nodes in a collaborative graph but execute isolated, their marginal value over
+one generalist is plausibly suppressed — a candidate partial explanation for the
+80% concordance. That is a reason to distrust the number, not a reason to
+revisit Jacob's decision to bank it.
+
+**11. Two agents ran without usable personas throughout.** `tech_infra_analyst`
+carries the joint-highest score weight (0.15) and is absent from `AGENT_FOLDERS`
+entirely — `load_agent_persona` returns `""` and `BaseAgent` falls back to a
+one-paragraph `role_description`. `technical-analyst` has a single `SOUL.md`
+against four to six files for every peer. Both were true for all six evaluations.
+Where the analysis finds the infrastructure or technical angle thin, this is the
+likely reason — and a miss caused by a missing persona is still a miss.

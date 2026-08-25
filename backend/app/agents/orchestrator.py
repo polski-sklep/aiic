@@ -922,7 +922,8 @@ class Orchestrator:
         ]
 
         headline = rich_text(str(rec or "NO DECISION"), bold=True)
-        detail = f"  ·  score {score if score is not None else 'n/a'}/100"
+        score_text = "n/a" if score is None else f"{float(score):g}"
+        detail = f"  ·  score {score_text}/100"
         if conviction:
             detail += f"  ·  conviction: {conviction}"
         ticker = str(info.get("ticker", "") or "")
@@ -991,24 +992,46 @@ class Orchestrator:
             if not summary and not key_findings:
                 continue
 
-            label = rich_text(agent_name.replace("_", " "), bold=True)
-            score_text = "n/a" if result.score is None else str(result.score)
+            # The raw agent_name, not a prettified form: it is the key in
+            # agent_outputs, and this page has outlived that table before.
+            label = rich_text(agent_name, bold=True)
+            score_text = "n/a" if result.score is None else f"{float(result.score):g}"
             label.extend(rich_text(f"  —  score {score_text}", color="gray"))
             confidence = str(result.output.get("confidence", "") or "")
             if confidence:
                 label.extend(rich_text(f"  ·  confidence {confidence}", italic=True, color="gray"))
 
+            def listing(items, title, limit=12):
+                """Bullets for one of an agent's lists.
+
+                A cap is needed — a toggle's children share the parent block and
+                cannot spill into a follow-up append — but an overrun is stated
+                in the page rather than the list just stopping. The full report
+                is linked at the top of every run, so nothing is unrecoverable.
+                """
+                if not isinstance(items, list) or not items:
+                    return []
+                out = [heading_block(title, 3)]
+                for entry in items[:limit]:
+                    out.extend(bullet_blocks(str(entry)))
+                overflow = len(items) - limit
+                if overflow > 0:
+                    out.extend(
+                        rich_bullet_block(
+                            rich_text(
+                                f"+{overflow} more — see the full report linked above",
+                                italic=True,
+                                color="gray",
+                            )
+                        )
+                    )
+                return out
+
             children: list[dict] = []
             if summary:
                 children.extend(paragraph_blocks(summary))
-            if isinstance(key_findings, list) and key_findings:
-                children.append(heading_block("Key findings", 3))
-                for item in key_findings[:6]:
-                    children.extend(bullet_blocks(str(item)))
-            if isinstance(agent_risks, list) and agent_risks:
-                children.append(heading_block("Risks", 3))
-                for item in agent_risks[:6]:
-                    children.extend(bullet_blocks(str(item)))
+            children.extend(listing(key_findings, "Key findings"))
+            children.extend(listing(agent_risks, "Risks"))
 
             findings.append(toggle_block(label, children))
 

@@ -171,12 +171,12 @@ async def create_transcript(
         await client.pages.create(
             parent={"database_id": settings.notion_transcripts_db},
             properties=properties,
-            children=children[:NOTION_CHILDREN_LIMIT],
+            children=batch_blocks(children)[0],
         ),
     )
     page_id = str(page["id"])
-    # pages.create caps `children` at 100 blocks; long content lands as appends.
-    await append_blocks(page_id, children[NOTION_CHILDREN_LIMIT:], client=client)
+    # pages.create is bound by the same limits as an append; the rest follows.
+    await append_blocks(page_id, children[len(batch_blocks(children)[0]):], client=client)
 
     logger.info("Created transcript page: %s (%s blocks)", page_id, len(children))
     return page_id
@@ -212,12 +212,12 @@ async def create_learning(
         await client.pages.create(
             parent={"database_id": settings.notion_learnings_db},
             properties=properties,
-            children=children[:NOTION_CHILDREN_LIMIT],
+            children=batch_blocks(children)[0],
         ),
     )
     page_id = str(page["id"])
-    # pages.create caps `children` at 100 blocks; long content lands as appends.
-    await append_blocks(page_id, children[NOTION_CHILDREN_LIMIT:], client=client)
+    # pages.create is bound by the same limits as an append; the rest follows.
+    await append_blocks(page_id, children[len(batch_blocks(children)[0]):], client=client)
 
     logger.info("Created learning page: %s (%s blocks)", page_id, len(children))
     return page_id
@@ -288,8 +288,9 @@ async def update_project_evaluation(
         logger.info("Updated project page %s (%s blocks appended)", page_id, appended)
         return page_id
 
-    # pages.create also caps `children` at 100; the remainder is appended.
-    head, tail = children[:NOTION_CHILDREN_LIMIT], children[NOTION_CHILDREN_LIMIT:]
+    # pages.create is bound by the same two limits as an append.
+    head = batch_blocks(children)[0]
+    tail = children[len(head):]
     page = cast(
         Mapping[str, object],
         await client.pages.create(
@@ -455,7 +456,8 @@ def _blocks_to_text(blocks: Sequence[Mapping[str, object]], indent: str = "") ->
 # Hard Notion API limits. https://developers.notion.com/reference/request-limits
 NOTION_TEXT_LIMIT = 2000       # characters per rich-text object
 NOTION_RICH_TEXT_LIMIT = 100   # rich-text objects per array
-NOTION_CHILDREN_LIMIT = 100    # blocks per children.append / pages.create call
+NOTION_CHILDREN_LIMIT = 100    # top-level blocks per children.append / pages.create
+NOTION_TOTAL_BLOCKS_LIMIT = 1000  # blocks per request INCLUDING nested children
 NOTION_URL_LIMIT = 2000        # characters in a link url
 
 # Hosts that a Notion reader's browser cannot resolve. The VPS runs with
@@ -499,8 +501,11 @@ def resolve_report_base() -> str:
 def split_text(text: str, limit: int = NOTION_TEXT_LIMIT) -> list[str]:
     """Split text into pieces of at most `limit` characters, on word boundaries.
 
-    Never drops characters: concatenating the result (with single spaces where a
-    break fell on whitespace) reproduces the input.
+    Exactly lossless: `"".join(split_text(t)) == t`. The whitespace a break
+    falls on is carried into the following piece rather than stripped — Notion
+    merges adjacent rich-text runs that share annotations, so stripping it
+    would silently weld the two words either side of every 2,000-character
+    boundary together in the stored page.
     """
     if len(text) <= limit:
         return [text]
@@ -512,8 +517,8 @@ def split_text(text: str, limit: int = NOTION_TEXT_LIMIT) -> list[str]:
         cut = max(window.rfind("\n"), window.rfind(" "))
         if cut <= limit // 2:  # no usable break point — hard cut
             cut = limit
-        pieces.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip()
+        pieces.append(remaining[:cut])
+        remaining = remaining[cut:]
     if remaining:
         pieces.append(remaining)
     return pieces
@@ -550,7 +555,7 @@ def rich_text(
     objects: list[dict[str, object]] = []
     for piece in split_text(content):
         if not piece:
-            continue
+            continue  # only ever the empty string, which Notion rejects
         text_payload: dict[str, object] = {"content": piece}
         if href:
             text_payload["link"] = {"url": href}
@@ -601,6 +606,19 @@ def inline_rich_text(text: str) -> list[dict[str, object]]:
     return objects or rich_text(text)
 
 
+def _cap_with_marker(objects: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Cap a rich-text array where the block type cannot be split into siblings.
+
+    Used only for callouts and headings, which must stay single blocks. The cut
+    is marked in the text rather than made silently — see the module header.
+    """
+    if len(objects) <= NOTION_RICH_TEXT_LIMIT:
+        return objects
+    kept = objects[:NOTION_RICH_TEXT_LIMIT - 1]
+    kept.extend(rich_text(" … (truncated to fit Notion's 100-run limit)", italic=True))
+    return kept[:NOTION_RICH_TEXT_LIMIT]
+
+
 def _cap_rich_text(objects: list[dict[str, object]]) -> list[list[dict[str, object]]]:
     """Chunk a rich-text array to Notion's 100-object limit, losing nothing."""
     if len(objects) <= NOTION_RICH_TEXT_LIMIT:
@@ -629,7 +647,7 @@ def _text_block(
 def heading_block(text: str, level: int = 2, *, toggleable: bool = False) -> dict[str, object]:
     level = min(max(level, 1), 3)
     block_type = f"heading_{level}"
-    payload: dict[str, object] = {"rich_text": inline_rich_text(text)[:NOTION_RICH_TEXT_LIMIT]}
+    payload: dict[str, object] = {"rich_text": _cap_with_marker(inline_rich_text(text))}
     if toggleable:
         payload["is_toggleable"] = True
     return {"object": "block", "type": block_type, block_type: payload}
@@ -677,24 +695,9 @@ def callout_block(
         "object": "block",
         "type": "callout",
         "callout": {
-            "rich_text": objects[:NOTION_RICH_TEXT_LIMIT],
+            "rich_text": _cap_with_marker(objects),
             "icon": {"type": "emoji", "emoji": emoji},
             "color": color,
-        },
-    }
-
-
-def toggle_block(
-    summary: list[dict[str, object]],
-    children: list[dict[str, object]],
-) -> dict[str, object]:
-    """A collapsible section. Children are capped to the per-array limit."""
-    return {
-        "object": "block",
-        "type": "toggle",
-        "toggle": {
-            "rich_text": summary[:NOTION_RICH_TEXT_LIMIT],
-            "children": children[:NOTION_CHILDREN_LIMIT],
         },
     }
 
@@ -708,12 +711,69 @@ def truncation_notice(what: str) -> dict[str, object]:
     )
 
 
+def toggle_block(
+    summary: list[dict[str, object]],
+    children: list[dict[str, object]],
+) -> dict[str, object]:
+    """A collapsible section.
+
+    A toggle's children go out inside the parent block, so they are bounded by
+    the same 100-element limit and cannot be sent as a follow-up append. If
+    there are more, the last slot carries a visible notice saying so rather
+    than the content just ending.
+    """
+    kept = children
+    if len(children) > NOTION_CHILDREN_LIMIT:
+        kept = children[:NOTION_CHILDREN_LIMIT - 1]
+        kept.append(truncation_notice(f"{len(children) - len(kept)} further blocks in this section"))
+    return {
+        "object": "block",
+        "type": "toggle",
+        "toggle": {
+            "rich_text": _cap_with_marker(summary),
+            "children": kept,
+        },
+    }
+
+
+def block_weight(block: Mapping[str, object]) -> int:
+    """Total blocks a payload entry costs, counting nested children."""
+    block_type = str(block.get("type", ""))
+    children = _as_sequence(_as_mapping(block.get(block_type, {})).get("children", []))
+    return 1 + sum(block_weight(_as_mapping(child)) for child in children)
+
+
 def batch_blocks(
     blocks: list[dict[str, object]],
     size: int = NOTION_CHILDREN_LIMIT,
+    total_limit: int = NOTION_TOTAL_BLOCKS_LIMIT,
 ) -> list[list[dict[str, object]]]:
-    """Split a block list into children.append-sized batches."""
-    return [blocks[i:i + size] for i in range(0, len(blocks), size)] or [[]]
+    """Split a block list into batches Notion will accept.
+
+    Two separate limits apply and only the first is obvious: at most 100
+    entries in the `children` array, AND at most 1,000 blocks in the request
+    once nested children are counted. A page of collapsed per-agent sections
+    hits the second one first — 100 toggles of 15 children each is 1,500 blocks
+    in a request whose array length is a perfectly legal 100. Verified against
+    the live API on 25 Aug 2026: "Number of blocks in the request exceeds limit
+    of 1000."
+    """
+    batches: list[list[dict[str, object]]] = []
+    current: list[dict[str, object]] = []
+    weight = 0
+
+    for block in blocks:
+        cost = block_weight(block)
+        if current and (len(current) >= size or weight + cost > total_limit):
+            batches.append(current)
+            current = []
+            weight = 0
+        current.append(block)
+        weight += cost
+
+    if current:
+        batches.append(current)
+    return batches or [[]]
 
 
 async def append_blocks(

@@ -42,3 +42,9 @@ docker-compose.override.yml
 *.log
 logs/
 .obsidian/
+
+# === Agent worktrees ===
+# Worktrees live inside the repo so everything sits under one folder. Git sees
+# them as untracked directories, so without this a `git add -A` would commit
+# twelve full checkouts into the repo itself.
+/worktrees/

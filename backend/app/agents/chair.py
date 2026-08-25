@@ -45,7 +45,12 @@ from app.utils.types import JSONObject, JSONValue
 # The cost of the larger window is ~7k additional input tokens on one Opus call,
 # well under $0.05 a scan. Starving the adjudicator to save that would be a poor
 # trade. The cap remains so that a pathological report cannot run unbounded.
-CHAIR_REPORT_BUDGET_CHARS = 48000
+#
+# Raised again from 48,000 after measuring a real deep report rather than an
+# estimate: the live Hyperliquid report's sections are 43,175 chars raw but
+# format to 49,048, and six sections were still being cut to the floor. Budget
+# against the formatted size, not the raw one.
+CHAIR_REPORT_BUDGET_CHARS = 72000
 CHAIR_RAY_BUDGET_CHARS = 3000
 
 # The Technical Analyst is in `exclude_from_scores` and reaches the Chair only
@@ -66,6 +71,7 @@ _SECTION_FLOOR_CHARS = 240
 # prompt keeps the report's own document order, so this does not re-rank what
 # the Chair reads, it only decides what survives when the budget binds.
 _REPORT_PRIORITY_KEYS = (
+    "25_what_changed",
     "1_executive_summary",
     "23_recommendation",
     "22_overall_score",

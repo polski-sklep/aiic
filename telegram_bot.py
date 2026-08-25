@@ -18,12 +18,30 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("committee-bot")
 
+# python-telegram-bot puts the bot token in the URL PATH, and httpx logs every
+# request line at INFO. Left alone, that writes the full token into the journal
+# on every poll — roughly a quarter of a million times a month, in cleartext,
+# readable by anything that can read logs or a /var/log backup. This is not
+# hypothetical: it is how the previous token was found.
+#
+# WARNING is enough to keep genuine transport failures visible.
+for _noisy in ("httpx", "httpcore", "telegram.ext.Updater", "telegram.request"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 # Required env vars (load via your .env or your shell):
 #   TELEGRAM_BOT_TOKEN         - from @BotFather
 #   TELEGRAM_ALLOWED_CHAT_ID   - numeric Telegram user/chat ID permitted to use this bot
 #   COMMITTEE_API_BASE         - internal FastAPI URL  (default: http://localhost:8100)
 #   COMMITTEE_REPORT_BASE      - public report URL     (default: same as COMMITTEE_API_BASE)
 ALLOWED_CHAT_ID = int(os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "0"))
+if not ALLOWED_CHAT_ID:
+    # 0 matches no real Telegram chat, so an unset allowlist does not fail open —
+    # it fails *silent*: the bot polls forever and ignores every message, which
+    # looks identical to a healthy bot. Say so at startup.
+    logging.getLogger("committee-bot").error(
+        "TELEGRAM_ALLOWED_CHAT_ID is not set — every message will be ignored. "
+        "Set it in the .env next to this script."
+    )
 API_BASE = os.environ.get("COMMITTEE_API_BASE", "http://localhost:8100")
 REPORT_BASE = os.environ.get("COMMITTEE_REPORT_BASE", API_BASE)
 
@@ -217,6 +235,10 @@ def main():
     if not token:
         logger.error("TELEGRAM_BOT_TOKEN not set")
         return
+    logger.info(
+        "Bot token loaded (id %s, secret withheld); allowed chat id %s",
+        token.split(":", 1)[0] or "?", ALLOWED_CHAT_ID or "UNSET",
+    )
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))

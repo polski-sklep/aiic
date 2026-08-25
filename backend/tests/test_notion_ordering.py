@@ -247,6 +247,46 @@ class AnchorTest(unittest.TestCase):
         )
         self.assertEqual(after[5:], before[1:])  # nothing old moved or vanished
 
+    def test_an_adopted_page_gains_exactly_one_header_ever(self):
+        """The live regression: the header sits at index 1, not index 0.
+
+        Looking only at the first child found nothing there on every later run
+        and minted a second header each time. One write hid this; the live page
+        showed two headers after two.
+        """
+        client = FakeClient()
+        client.seed(evaluation("2026-01-01"))
+
+        for stamp in ("2026-04-01", "2026-07-01", "2026-10-01"):
+            run(prepend_blocks(PAGE, evaluation(stamp), client=client))
+
+        self.assertEqual(client.headers(), 1)
+        self.assertTrue(is_history_header(client.children.pages[PAGE][1]))
+        self.assertEqual(
+            [line for line in client.order() if line.startswith("heading_1:")],
+            [
+                "heading_1:Evaluation — 2026-10-01",
+                "heading_1:Evaluation — 2026-07-01",
+                "heading_1:Evaluation — 2026-04-01",
+                "heading_1:Evaluation — 2026-01-01",
+            ],
+        )
+
+    def test_a_header_pushed_down_by_a_hand_written_note_is_still_found(self):
+        client = FakeClient()
+        run(prepend_blocks(PAGE, evaluation("2026-01-01"), client=client))
+        client.children.pages[PAGE][:0] = [
+            {"id": "note", "type": "paragraph",
+             "paragraph": {"rich_text": [{"text": {"content": "Jacob's note"}}]}}
+        ]
+
+        run(prepend_blocks(PAGE, evaluation("2026-04-01"), client=client))
+
+        self.assertEqual(client.headers(), 1)
+        self.assertEqual(client.order()[0], "paragraph:Jacob's note")  # untouched
+        self.assertTrue(is_history_header(client.children.pages[PAGE][1]))
+        self.assertEqual(client.order()[3], "heading_1:Evaluation — 2026-04-01")
+
 
 class NewestFirstTest(unittest.TestCase):
     def test_three_runs_read_newest_to_oldest(self):

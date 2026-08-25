@@ -930,6 +930,15 @@ def _last_created_block_id(
     )
 
 
+# How far down the page to look for an existing header. It is written at index
+# 0 on a page this module created and at index 1 on one it adopted, so a small
+# window suffices — and searching a window rather than only the first child is
+# what stops a second header being created on every run of an adopted page.
+# The slack above 1 lets the header still be found if someone types a note in
+# above it, in which case new runs go below that note, which is what they meant.
+_HEADER_SEARCH_WINDOW = 10
+
+
 async def history_anchor_id(page_id: str, client: AsyncClient | None = None) -> str:
     """Return the anchor to insert new runs after, creating it if absent.
 
@@ -939,13 +948,22 @@ async def history_anchor_id(page_id: str, client: AsyncClient | None = None) -> 
     first (in practice the leading divider of the oldest run). Everything below
     the header is then correctly ordered newest-first from that point on; only
     that one legacy block stays stranded above it.
+
+    The header is looked for across the first few blocks, not just the first.
+    Checking only index 0 created a fresh header on every run of an adopted
+    page, because on such a page the header lives at index 1 and never moves up
+    — found on the live API, not in the unit tests, which ran a single write.
     """
     client = client or get_notion_client()
     response = cast(
         Mapping[str, object],
-        await client.blocks.children.list(block_id=page_id, page_size=1),
+        await client.blocks.children.list(block_id=page_id, page_size=_HEADER_SEARCH_WINDOW),
     )
     results = [_as_mapping(item) for item in _as_sequence(response.get("results", []))]
+
+    for block in results:
+        if is_history_header(block):
+            return str(block["id"])
 
     if not results:
         created = cast(
@@ -956,16 +974,12 @@ async def history_anchor_id(page_id: str, client: AsyncClient | None = None) -> 
         )
         return _last_created_block_id(created, 1, page_id)
 
-    first = results[0]
-    if is_history_header(first):
-        return str(first["id"])
-
     created = cast(
         Mapping[str, object],
         await client.blocks.children.append(
             block_id=page_id,
             children=[history_header_block()],
-            after=str(first["id"]),
+            after=str(results[0]["id"]),
         ),
     )
     logger.info("Added the newest-first header to existing Notion page %s", page_id)

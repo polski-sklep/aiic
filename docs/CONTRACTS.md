@@ -6,6 +6,18 @@ report to the orchestrator.
 
 Base commit for all agent branches: `5d3c033` on `integration`.
 
+**Worktree location — standing rule.** Agent worktrees live at
+`aiic/worktrees/<name>`, inside the repository, so the whole project sits in one
+folder. Never create them in a sibling directory such as `aiic-worktrees/`.
+
+`/worktrees/` is in `.gitignore` and must stay there. Git sees a worktree as an
+ordinary untracked directory, so without that entry a single `git add -A` would
+commit a dozen complete checkouts into the repository. Add the ignore **before**
+creating the first worktree, not after.
+
+Move existing ones with `git worktree move` — never `mv`, which leaves the
+worktree admin files pointing at the old path.
+
 ---
 
 ## 1. File ownership

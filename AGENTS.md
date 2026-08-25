@@ -1,7 +1,9 @@
 # Active agents
 
 Integration branch: `integration`. All agent branches cut from `5d3c033`.
-Worktrees live at `/Users/Jacob/Projects/aiic-worktrees/<name>`.
+Worktrees live at `aiic/worktrees/<name>` — inside the repo, one folder for
+everything. `/worktrees/` is gitignored; see `docs/CONTRACTS.md` for why that
+matters.
 
 Shared interfaces and file ownership: [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).

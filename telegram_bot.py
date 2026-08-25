@@ -10,10 +10,14 @@ Formats:
 """
 import os
 import asyncio
+import uuid
 import logging
 import httpx
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, MessageHandler, CommandHandler, CallbackQueryHandler,
+    filters, ContextTypes,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("committee-bot")
@@ -46,31 +50,93 @@ API_BASE = os.environ.get("COMMITTEE_API_BASE", "http://localhost:8100")
 REPORT_BASE = os.environ.get("COMMITTEE_REPORT_BASE", API_BASE)
 
 
+PENDING = {}
+
+
+class _Reply:
+    """Adapts a Message so the evaluation body can keep calling
+    update.message.reply_text after being moved out of the handler."""
+
+    def __init__(self, message):
+        self.message = message
+
+
 def get_token():
     return os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 
-async def resolve_project(name):
-    """Try to auto-resolve project details via CoinGecko search."""
+async def resolve_candidates(query, limit=3):
+    """Rank CoinGecko search hits for `query`, best match first.
+
+    CoinGecko's /search sorts by market cap, NOT by how well the result matches
+    what you typed. Taking coins[0] therefore returns the *largest* coin whose
+    name or symbol merely mentions the query. Searching "SERV" put Ethereum Name
+    Service (rank 153) first and OpenServ — the only exact symbol match, rank 811
+    — twelfth. The committee then spent ~$2 evaluating the wrong asset.
+
+    So rank explicitly: exact symbol, then exact name, then symbol prefix, then
+    CoinGecko's own order as the tiebreak.
+    """
+    q = (query or "").strip().lower()
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
-                "https://api.coingecko.com/api/v3/search",
-                params={"query": name}
+                "https://api.coingecko.com/api/v3/search", params={"query": query}
             )
-            data = r.json()
-            coins = data.get("coins", [])
-            if coins:
-                coin = coins[0]
-                return {
-                    "project_name": coin.get("name", name),
-                    "ticker": coin.get("symbol", "").upper(),
-                    "coingecko_id": coin.get("id", ""),
-                    "category": "L1",
-                }
-    except Exception as e:
-        logger.error("CoinGecko resolve failed: %s", e)
-    return None
+            r.raise_for_status()
+            coins = r.json().get("coins", [])
+    except Exception as exc:
+        logger.error("CoinGecko resolve failed: %s", exc)
+        return []
+
+    def rank(idx_coin):
+        idx, c = idx_coin
+        sym = (c.get("symbol") or "").lower()
+        nm = (c.get("name") or "").lower()
+        if sym == q:
+            return (0, idx)
+        if nm == q:
+            return (1, idx)
+        if sym.startswith(q) or nm.startswith(q):
+            return (2, idx)
+        return (3, idx)
+
+    ordered = [c for _, c in sorted(enumerate(coins), key=rank)]
+    out = []
+    for c in ordered[:limit]:
+        out.append({
+            "project_name": c.get("name") or query,
+            "ticker": (c.get("symbol") or "").upper(),
+            "coingecko_id": c.get("id") or "",
+            "category": "",          # filled from /coins/{id}; never assumed
+            "market_cap_rank": c.get("market_cap_rank"),
+        })
+    return out
+
+
+async def fetch_category(coingecko_id):
+    """Real category from CoinGecko, because the old code hardcoded "L1".
+
+    Every auto-resolved project was labelled L1 — a naming service, a DeFi
+    protocol, a stablecoin, all "L1" — and that label is passed to the agents as
+    fact.
+    """
+    if not coingecko_id:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                "https://api.coingecko.com/api/v3/coins/" + coingecko_id,
+                params={"localization": "false", "tickers": "false",
+                        "market_data": "false", "community_data": "false",
+                        "developer_data": "false"},
+            )
+            r.raise_for_status()
+            cats = [c for c in (r.json().get("categories") or []) if c]
+            return cats[0] if cats else ""
+    except Exception as exc:
+        logger.warning("Category lookup failed for %s: %s", coingecko_id, exc)
+        return ""
 
 
 def parse_message(text):
@@ -108,26 +174,113 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text or text.startswith("/"):
         return
 
-    # Parse or resolve
-    project = parse_message(text)
-    if not project:
+    explicit = parse_message(text)
+    if explicit:
+        candidates = [dict(explicit, market_cap_rank=None)]
+    else:
         await update.message.reply_text("Resolving project...")
-        project = await resolve_project(text)
-        if not project:
-            await update.message.reply_text("Could not find project. Try: Name Ticker CoinGeckoID Category")
+        candidates = await resolve_candidates(text)
+        if not candidates:
+            await update.message.reply_text(
+                "Could not find '%s' on CoinGecko.\n"
+                "Try the explicit form: Name Ticker CoinGeckoID Category" % text[:60]
+            )
             return
 
+    best = candidates[0]
+    if not best.get("category"):
+        best["category"] = await fetch_category(best["coingecko_id"]) or "Unknown"
+
+    # Confirmation gate. A run is 15 agents, 5-10 minutes and roughly $2 of API
+    # spend, and it writes a permanent row into the calibration ledger. Nothing
+    # starts without an explicit tap.
+    token = uuid.uuid4().hex[:12]
+    PENDING[token] = {"chat_id": update.effective_chat.id, "candidates": candidates,
+                      "chosen": 0, "query": text}
+
+    rank = best.get("market_cap_rank")
+    lines = [
+        "Confirm before I run this:",
+        "",
+        "  %s (%s)" % (best["project_name"], best["ticker"]),
+        "  CoinGecko: %s" % best["coingecko_id"],
+        "  Category:  %s" % best["category"],
+    ]
+    if rank:
+        lines.append("  Mkt cap rank: #%s" % rank)
+    if not explicit and len(candidates) > 1:
+        others = ", ".join(
+            "%s (%s)" % (c["project_name"], c["ticker"]) for c in candidates[1:]
+        )
+        lines += ["", "Other matches for '%s': %s" % (text[:30], others)]
+    lines += ["", "~5-10 min, ~$2 of API spend, and it is recorded in the ledger."]
+
+    buttons = [[InlineKeyboardButton("Run evaluation", callback_data="go:" + token)]]
+    for i, c in enumerate(candidates[1:], start=1):
+        buttons.append([InlineKeyboardButton(
+            "Use %s (%s) instead" % (c["project_name"][:22], c["ticker"]),
+            callback_data="pick:%s:%d" % (token, i))])
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="no:" + token)])
+
+    await update.message.reply_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the confirm / switch-match / cancel buttons."""
+    q = update.callback_query
+    await q.answer()
+    if q.message.chat.id != ALLOWED_CHAT_ID:
+        return
+
+    action, _, rest = q.data.partition(":")
+    token = rest.split(":")[0]
+    pending = PENDING.get(token)
+    if not pending:
+        await q.edit_message_text("That confirmation has expired — send the project again.")
+        return
+
+    if action == "no":
+        PENDING.pop(token, None)
+        await q.edit_message_text("Cancelled. Nothing was run and nothing was recorded.")
+        return
+
+    if action == "pick":
+        idx = int(rest.split(":")[1])
+        pending["chosen"] = idx
+        c = pending["candidates"][idx]
+        if not c.get("category"):
+            c["category"] = await fetch_category(c["coingecko_id"]) or "Unknown"
+        await q.edit_message_text(
+            "Confirm before I run this:\n\n"
+            "  %s (%s)\n  CoinGecko: %s\n  Category:  %s\n\n"
+            "~5-10 min, ~$2 of API spend, and it is recorded in the ledger."
+            % (c["project_name"], c["ticker"], c["coingecko_id"], c["category"]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Run evaluation", callback_data="go:" + token)],
+                [InlineKeyboardButton("Cancel", callback_data="no:" + token)],
+            ]),
+        )
+        return
+
+    PENDING.pop(token, None)
+    project = pending["candidates"][pending["chosen"]]
+    await q.edit_message_text(
+        "Running evaluation for %s (%s)...\nCoinGecko ID: %s\nCategory: %s\n\n"
+        "This takes 5-10 minutes."
+        % (project["project_name"], project["ticker"],
+           project["coingecko_id"], project["category"])
+    )
+    await run_evaluation(q.message, project)
+
+
+async def run_evaluation(message, project):
     name = project["project_name"]
     ticker = project["ticker"]
     cg_id = project["coingecko_id"]
     category = project["category"]
-
-    await update.message.reply_text(
-        "Running evaluation for %s (%s)...\n"
-        "CoinGecko ID: %s\n"
-        "Category: %s\n\n"
-        "This takes 5-10 minutes." % (name, ticker, cg_id, category)
-    )
+    update = _Reply(message)
 
     # Call evaluation API
     try:
@@ -244,6 +397,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reports", cmd_reports))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CallbackQueryHandler(on_confirm))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Committee bot starting...")

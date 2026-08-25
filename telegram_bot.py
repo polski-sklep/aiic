@@ -250,9 +250,13 @@ def queue_eta(index, now=None):
 
 
 def fmt_minutes(minutes):
-    minutes = int(round(minutes))
-    if minutes < 1:
+    if minutes <= 0:
         return "now"
+    if minutes < 1:
+        # Only reachable if someone tunes a timeout down to seconds. Say seconds
+        # rather than rounding a real deadline to "now".
+        return "~%d sec" % max(int(round(minutes * 60)), 1)
+    minutes = int(round(minutes))
     if minutes < 60:
         return "~%d min" % minutes
     return "~%dh %02dm" % divmod(minutes, 60)
@@ -575,26 +579,33 @@ async def _ask_confirmation(bot, job):
     never answered must not hold the queue. It is dropped, said out loud, and
     the next job starts.
     """
-    best = job["candidates"][job["chosen"]]
-    if not best.get("category"):
-        best["category"] = await fetch_category(best["coingecko_id"]) or "Unknown"
-
-    prefix = ""
-    if job.get("recovered"):
-        prefix = ("Recovered after a restart — this one was mid-run, so check "
-                  "/reports first in case it already finished.\n\n")
-        job["recovered"] = False
-    text, markup = _confirmation_view(job)
-    message = await bot.send_message(chat_id=job["chat_id"], text=prefix + text,
-                                     reply_markup=markup)
-
-    record = {"job": job, "event": asyncio.Event(), "decision": None, "message": message}
+    # Register BEFORE the category lookup and the send. Both are network calls,
+    # and a /cancel arriving in that window would otherwise find nothing to
+    # cancel — leaving the worker waiting 15 minutes on a card for a job the
+    # user has already been told is gone.
+    record = {"job": job, "event": asyncio.Event(), "decision": None, "message": None}
     PENDING[job["id"]] = record
     try:
+        best = job["candidates"][job["chosen"]]
+        if not best.get("category"):
+            best["category"] = await fetch_category(best["coingecko_id"]) or "Unknown"
+        if record["decision"]:
+            return record["decision"]
+
+        prefix = ""
+        if job.get("recovered"):
+            prefix = ("Recovered after a restart — this one was mid-run, so check "
+                      "/reports first in case it already finished.\n\n")
+            job["recovered"] = False
+        text, markup = _confirmation_view(job)
+        message = await bot.send_message(chat_id=job["chat_id"], text=prefix + text,
+                                         reply_markup=markup)
+        record["message"] = message
+
         await asyncio.wait_for(record["event"].wait(), timeout=CONFIRM_TIMEOUT)
     except asyncio.TimeoutError:
         try:
-            await message.edit_text(
+            await record["message"].edit_text(
                 "Expired — no confirmation within %s, so I did not run %s.\n"
                 "Nothing was spent. Send it again when you want it."
                 % (fmt_minutes(CONFIRM_TIMEOUT / 60.0), job_label(job))
@@ -618,24 +629,31 @@ async def _run_watched(target, project):
     """
     task = asyncio.ensure_future(run_evaluation(target, project))
     waited = 0.0
-    while True:
-        interval = STALL_WARN if waited == 0 else STALL_REPEAT
-        done, _pending = await asyncio.wait({task}, timeout=interval)
-        if done:
-            return await task  # re-raises anything the evaluation raised
-        waited += interval
-        logger.warning("Evaluation for %s has been running %d min",
-                       project.get("project_name"), int(waited / 60))
-        try:
-            await target.reply_text(
-                "Still running %s (%s) after %d minutes — well past the usual %d.\n"
-                "I have not cancelled it and I will not; check the backend "
-                "(/health) if this looks wedged. %d job(s) waiting behind it."
-                % (project.get("project_name"), project.get("ticker"),
-                   int(waited / 60), int(JOB_MINUTES), max(len(QUEUE) - 1, 0))
-            )
-        except Exception as exc:
-            logger.warning("Could not send the stall warning: %s", exc)
+    try:
+        while True:
+            interval = STALL_WARN if waited == 0 else STALL_REPEAT
+            done, _pending = await asyncio.wait({task}, timeout=interval)
+            if done:
+                return await task  # re-raises anything the evaluation raised
+            waited += interval
+            logger.warning("Evaluation for %s has been running %d min",
+                           project.get("project_name"), int(waited / 60))
+            try:
+                await target.reply_text(
+                    "Still running %s (%s) after %d minutes — well past the usual %d.\n"
+                    "I have not cancelled it and I will not; check the backend "
+                    "(/health) if this looks wedged. %d job(s) waiting behind it."
+                    % (project.get("project_name"), project.get("ticker"),
+                       int(waited / 60), int(JOB_MINUTES), max(len(QUEUE) - 1, 0))
+                )
+            except Exception as exc:
+                logger.warning("Could not send the stall warning: %s", exc)
+    except asyncio.CancelledError:
+        # Shutting down. Take the in-flight request with us rather than leaving
+        # an orphaned task for the loop to complain about — the job itself is
+        # preserved in the queue file by _process.
+        task.cancel()
+        raise
 
 
 async def _process(bot, job):
@@ -652,20 +670,21 @@ async def _process(bot, job):
         job["state"] = "running"
         job["started_at"] = time.time()
         save_queue()
+        await _run_watched(target, job["candidates"][job["chosen"]])
+    except Exception as exc:
+        # One bad job must not take the worker with it, and it must not vanish
+        # quietly either. run_evaluation reports the failures it expects; this
+        # covers everything else, including a crash while asking for
+        # confirmation, when there is no other message to hang the news on.
+        logger.exception("Job %s (%s) failed", job["id"], job["query"])
         try:
-            await _run_watched(target, job["candidates"][job["chosen"]])
-        except Exception as exc:
-            # One bad job must not take the worker with it. run_evaluation
-            # already reports the failures it expects; this is for the ones it
-            # does not.
-            logger.exception("Evaluation for %s failed", job["query"])
-            try:
-                await target.reply_text(
-                    "Evaluation of %s failed: %s\nMoving on to the next job."
-                    % (job_label(job), str(exc)[:200])
-                )
-            except Exception as send_exc:
-                logger.error("Could not report the failure: %s", send_exc)
+            await target.reply_text(
+                "%s failed: %s: %s\nNothing further will be retried for it. "
+                "Moving on to the next job."
+                % (job_label(job), type(exc).__name__, str(exc)[:200])
+            )
+        except Exception as send_exc:
+            logger.error("Could not report the failure: %s", send_exc)
     except asyncio.CancelledError:
         # Shutdown, not completion. Put the job back to plain `queued` and leave
         # it in the queue so it reaches the file intact — this is the exact case
@@ -977,21 +996,37 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    async def drop(job):
+        """Retire one job. If its confirmation card is up, take the live button
+        off it too — a cancelled job must not leave a tappable 'Run evaluation'
+        sitting in the chat."""
+        record = PENDING.get(job["id"])
+        if record:
+            record["decision"] = "no"
+            record["event"].set()
+            if record.get("message"):
+                try:
+                    await record["message"].edit_text(
+                        "Cancelled from /cancel. %s was not run and nothing was recorded."
+                        % job_label(job)
+                    )
+                except Exception as exc:
+                    logger.warning("Could not edit the cancelled card: %s", exc)
+            return True          # the worker retires it
+        if position_of(job):
+            QUEUE.remove(job)
+        return False
+
     if args[0].lower() == "all":
         # Everything that has not started. A running evaluation has already been
         # paid for and is writing a ledger row; dropping it here would leave the
         # backend running with nobody listening for the result.
         dropped = [j for j in QUEUE if j["state"] != "running"]
         for job in dropped:
-            record = PENDING.get(job["id"])
-            if record:
-                record["decision"] = "no"
-                record["event"].set()
-            elif position_of(job):
-                QUEUE.remove(job)
+            await drop(job)
         save_queue()
         wake_worker()
-        kept = "  The running job continues." if QUEUE else ""
+        kept = " The running job continues." if QUEUE else ""
         await update.message.reply_text(
             "Cancelled %d queued %s (%s not spent).%s"
             % (len(dropped), "job" if len(dropped) == 1 else "jobs",
@@ -1020,19 +1055,14 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     label = job_label(job)
-    record = PENDING.get(job["id"])
-    if record:
-        # It is at the front with a confirmation card up; let the worker retire
-        # it so there is exactly one place that removes jobs.
-        record["decision"] = "no"
-        record["event"].set()
-    else:
-        QUEUE.remove(job)
-        save_queue()
-        wake_worker()
+    # If it is at the front with a card up, the worker retires it, so there is
+    # exactly one place that removes jobs from the queue.
+    worker_will_retire = await drop(job)
+    save_queue()
+    wake_worker()
     await update.message.reply_text(
         "Cancelled %s. %s not spent. %d left in the queue."
-        % (label, fmt_cost(1), max(len(QUEUE) - (1 if record else 0), 0))
+        % (label, fmt_cost(1), max(len(QUEUE) - (1 if worker_will_retire else 0), 0))
     )
 
 

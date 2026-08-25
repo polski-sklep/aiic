@@ -11,6 +11,10 @@ from app.utils.types import JSONObject
 
 logger = logging.getLogger(__name__)
 
+# Above this requested output size the provider streams rather than waiting on a
+# single response, so a long generation cannot hit the SDK's 600s timeout.
+STREAMING_THRESHOLD_TOKENS = 8192
+
 
 class ClaudeProvider:
     def __init__(self):
@@ -107,7 +111,23 @@ class ClaudeProvider:
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
-        response = await self.client.messages.create(**kwargs)
+        # Stream once the requested output is large.
+        #
+        # The SDK applies a flat 600s timeout to a non-streaming create(). The
+        # Report Writer now asks for up to 24,576 output tokens; at observed Opus
+        # rates a full report is 200-260s and the ceiling is 300-480s, so a slow
+        # run would hit that timeout and lose a fifteen-agent evaluation that had
+        # already succeeded. Streaming removes the wall entirely because bytes
+        # keep arriving.
+        #
+        # get_final_message() returns the same Message object create() would
+        # have, so every caller below is unchanged. Small calls keep the simpler
+        # non-streaming path.
+        if max_tokens > STREAMING_THRESHOLD_TOKENS:
+            async with self.client.messages.stream(**kwargs) as stream:
+                response = await stream.get_final_message()
+        else:
+            response = await self.client.messages.create(**kwargs)
 
         content_text = ""
         tool_calls: list[ToolCall] = []

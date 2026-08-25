@@ -34,7 +34,18 @@ from app.utils.types import JSONObject, JSONValue
 # decision-relevant sections reserved in full and everything else truncated
 # per-section behind a visible marker. A section that was shortened says so, so
 # the Chair can tell the difference between "brief" and "cut off".
-CHAIR_REPORT_BUDGET_CHARS = 12000
+# Sized to pass a full report through intact, not to trim one.
+#
+# This was 12,000, which fitted the old report exactly — it measured 7,185 chars
+# because the Report Writer was never asked for depth. Now that each section
+# carries a real brief, a report runs ~40,000 chars, and at the old budget the
+# Chair saw 35% of it: the extra depth would have reached the Notion page and the
+# HTML report but not the agent that actually makes the decision.
+#
+# The cost of the larger window is ~7k additional input tokens on one Opus call,
+# well under $0.05 a scan. Starving the adjudicator to save that would be a poor
+# trade. The cap remains so that a pathological report cannot run unbounded.
+CHAIR_REPORT_BUDGET_CHARS = 48000
 CHAIR_RAY_BUDGET_CHARS = 3000
 
 # The Technical Analyst is in `exclude_from_scores` and reaches the Chair only

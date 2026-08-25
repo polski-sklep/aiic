@@ -196,7 +196,15 @@ class ClaudeProvider:
     ) -> LLMResponse:
         model = self._resolve_model(tier)
         system_blocks, api_messages = self._build_messages(messages)
-        self._apply_cache_control(system_blocks, api_messages)
+
+        # A cache write costs 1.25x, so break-even is the second request against
+        # the same prefix. A call with no tools and no history cannot loop and
+        # cannot be followed up, so a breakpoint on it is a guaranteed 25%
+        # surcharge with no read to earn it back. Everything else — every
+        # agent round, since agents always carry at least the knowledge tools —
+        # gets the breakpoints.
+        if tools or len(api_messages) > 1:
+            self._apply_cache_control(system_blocks, api_messages)
 
         kwargs: JSONObject = {
             "model": model,

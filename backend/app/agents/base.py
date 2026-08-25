@@ -38,6 +38,16 @@ def split_system_prompt(prompt: str) -> str | list[JSONObject]:
 
     Returns the prompt unchanged when there is no volatile section to separate,
     so the provider keeps its single-block path.
+
+    The list form is already inside ``LLMMessage``'s declared content type
+    (``str | list[JSONObject]``), so this is not a new interface. It does mean
+    a provider now has to handle a list here: ``ClaudeProvider`` does, and it
+    attaches ``cache_control`` to its own copies rather than to these blocks, so
+    no provider syntax leaks back out. ``OpenAIProvider`` forwards the list
+    unchanged — Chat Completions accepts a content-part array on a system
+    message — but it is not the configured provider and this path has not been
+    exercised against it. Its usage block also reports cached tokens under a
+    different name, so ``_cache_usage`` reads 0 there; see the report.
     """
     # Anchored on both sides so the heading cannot be matched where it merely
     # appears inside a sentence, or inside a persona file that happens to use

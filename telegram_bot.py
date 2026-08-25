@@ -270,7 +270,7 @@ async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = pending["candidates"][pending["chosen"]]
     await q.edit_message_text(
         "Running evaluation for %s (%s)...\nCoinGecko ID: %s\nCategory: %s\n\n"
-        "This takes 5-10 minutes."
+        "This usually takes 5-12 minutes."
         % (project["project_name"], project["ticker"],
            project["coingecko_id"], project["category"])
     )
@@ -396,7 +396,14 @@ async def run_evaluation(message, project):
 
     # Call evaluation API
     try:
-        async with httpx.AsyncClient(timeout=600) as client:
+        # 20 minutes, not 10.
+        #
+        # A real Hyperliquid run took 11m31s and succeeded — 15 agents, report
+        # persisted — and the bot reported "Evaluation error:" at exactly 10:00
+        # because its own read timeout fired. The user saw a failure for work that
+        # had completed. The deeper report sections make long runs more common,
+        # not less, so the client must outlast the pipeline rather than race it.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0, connect=15.0)) as client:
             r = await client.post(
                 API_BASE + "/api/evaluate",
                 json={

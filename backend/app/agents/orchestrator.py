@@ -41,6 +41,10 @@ from app.utils.types import JSONObject, ScoreReconciliation
 
 logger = logging.getLogger(__name__)
 
+
+class _SkipCalibration(Exception):
+    """Raised to skip the calibration write for a run with no real verdict."""
+
 StatusCallback = Callable[[str, str, JSONObject], Awaitable[None]] | None
 
 # Recommendation bands for the weighted committee score (AIIC_HANDOFF.md §3):
@@ -675,9 +679,28 @@ class Orchestrator:
         chair = await self._run_agent(self.chair, chair_context, on_status)
         agent_results[self.chair.name] = chair
 
+        # A parse failure is not a verdict.
+        #
+        # On the Hyperliquid run the Chair hit its output ceiling mid-JSON. The
+        # object would not parse, `decision` was absent, and this fallback wrote
+        # INSUFFICIENT_DATA into the calibration ledger for a run whose own
+        # preamble read "the committee and Ray converge on PASS". That is
+        # indistinguishable, forever after, from a genuine "we could not assess
+        # this" — and the ledger is the one artefact the whole calibration loop
+        # depends on.
+        chair_failed = bool(chair.error) or "parse_error" in chair.output
         decision = chair.output.get("decision", "VETO" if vetoed else "INSUFFICIENT_DATA")
         if vetoed:
             decision = "VETO"
+        elif chair_failed and "decision" not in chair.output:
+            decision = "CHAIR_FAILED"
+            logger.error(
+                "Chair produced no usable decision for %s (%s) - recording as "
+                "CHAIR_FAILED, not as a verdict. tokens_out=%s",
+                project_name,
+                chair.output.get("parse_error") or chair.error,
+                chair.tokens_output,
+            )
 
         data_quality = aggregate_data_quality(agent_results)
         if data_quality["verified_ratio"] is not None and data_quality["verified_ratio"] < 0.5:
@@ -743,6 +766,15 @@ class Orchestrator:
         try:
             from app.knowledge.calibration import record_calibration
 
+            if decision == "CHAIR_FAILED":
+                # Nothing to calibrate. A run whose adjudication failed has no
+                # recommendation to grade against a future price, and writing one
+                # anyway is how the ledger acquires rows that look like verdicts
+                # and are not. The evaluation, its agent outputs and its report
+                # are all still persisted, so the run is recoverable and can be
+                # re-adjudicated; it simply does not enter the scorecard.
+                raise _SkipCalibration
+
             if evaluation_id is None:
                 logger.warning(
                     "Calibration record for %s will be orphaned: no evaluation_id "
@@ -779,6 +811,13 @@ class Orchestrator:
                         signposts=[str(s) for s in signposts] if signposts else None,
                         review_date=str(review_date) if review_date else None,
                     )
+        except _SkipCalibration:
+            logger.warning(
+                "Calibration skipped for %s: the Chair produced no usable decision, "
+                "so there is no verdict to grade. Evaluation and report are still "
+                "persisted.",
+                project_name,
+            )
         except Exception as exc:
             logger.warning("Calibration capture failed (non-fatal): %s", exc)
 

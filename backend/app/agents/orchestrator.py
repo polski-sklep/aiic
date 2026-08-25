@@ -42,6 +42,23 @@ from app.utils.types import JSONObject, ScoreReconciliation
 logger = logging.getLogger(__name__)
 
 
+def _render_prior_context(prior) -> str:
+    """Bounded prompt text for a prior evaluation; "" when there is none.
+
+    Imported lazily so that `app.agents.orchestrator` keeps importing cleanly
+    without a database, which the test suite relies on.
+    """
+    if prior is None:
+        return ""
+    try:
+        from app.knowledge.history import render_prior_context
+
+        return render_prior_context(prior)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Prior-evaluation rendering failed: %s", exc)
+        return ""
+
+
 class _SkipCalibration(Exception):
     """Raised to skip the calibration write for a run with no real verdict."""
 
@@ -562,6 +579,42 @@ class Orchestrator:
                 "recommendation": "FAIL_GATE",
             }
 
+        # What this committee decided about this project last time, if anything.
+        #
+        # WHO SEES THIS, AND WHY ONLY THEM
+        #
+        # It goes into `prior_evaluation_context`, a key that ONLY
+        # agents/report_writer.py reads. It is deliberately NOT merged into
+        # `knowledge_context`, which is the channel BaseAgent renders under
+        # RELEVANT PRIOR KNOWLEDGE: that string is shared by the whole run, so
+        # using it would hand the previous decision and score to all eight data
+        # agents and the Risk Officer at once. Three reasons not to:
+        #
+        # 1. Anchoring. The eight data agents exist to observe the world
+        #    freshly. Telling tokenomics_analyst "the committee scored this 34.3
+        #    and said PASS in June" invites it to reconcile with that number
+        #    rather than measure. docs/CONTRACTS.md 4.2 makes their mutual
+        #    independence the design; a shared prior conclusion is a different
+        #    kind of correlation but it is still correlation.
+        # 2. The retrospective locates the defect precisely: "The failure is at
+        #    adjudication, not at collection" (02-findings.md F2). Memory
+        #    belongs where the failure is.
+        # 3. Cost. Fifteen agents times ~1,550 characters is ~5,800 input tokens
+        #    a run for material fourteen of them cannot act on, while a parallel
+        #    workstream is cutting input cost.
+        #
+        # The Chair still gets it, and gets it in the right form: section 25 of
+        # the report, which chair.format_report_for_chair renders like any other
+        # section. So the agent that decides whether the prior call still holds
+        # reads the committee's own adjudicated answer to that question rather
+        # than the raw ledger.
+        #
+        # `exclude_evaluation_id` keeps a re-run from matching itself.
+        prior_evaluation = await self._load_prior_evaluation(
+            project_name, resolved, evaluation_id
+        )
+        context["prior_evaluation_context"] = _render_prior_context(prior_evaluation)
+
         if on_status:
             await on_status("step", "1_intelligence_gathering", {"agents": [agent.name for agent in self.data_agents]})
         data_tasks = [self._run_agent(agent, context, on_status) for agent in self.data_agents]
@@ -758,6 +811,12 @@ class Orchestrator:
             "data_quality": data_quality,
         }
 
+        # Absent entirely on a first-time evaluation, so nothing downstream can
+        # tell the difference between this pipeline and the one before it.
+        prior_summary = self._prior_summary(prior_evaluation)
+        if prior_summary is not None:
+            result["prior_evaluation"] = prior_summary
+
         project_metadata = context.get("project_info", {})
         await self._notion_write(
             project_name, project_metadata, agent_results, overall, decision, evaluation_id
@@ -822,6 +881,76 @@ class Orchestrator:
             logger.warning("Calibration capture failed (non-fatal): %s", exc)
 
         return result
+
+    async def _load_prior_evaluation(
+        self, project_name: str, resolved: JSONObject, evaluation_id: str | None
+    ):
+        """The previous evaluation of this project, or None. Never raises.
+
+        A memory lookup must not be able to fail a 15-agent run, so every
+        failure path here degrades to "no prior" — which is exactly the
+        behaviour the pipeline had before this existed.
+        """
+        try:
+            from app.knowledge.history import get_prior_evaluation
+
+            prior = await get_prior_evaluation(
+                project_name,
+                str(resolved.get("coingecko_id", "") or "") or None,
+                exclude_evaluation_id=evaluation_id,
+            )
+        except Exception as exc:
+            logger.warning("Prior-evaluation lookup failed for %s: %s", project_name, exc)
+            return None
+
+        if prior is None:
+            logger.info("No prior evaluation found for %s - first-time run", project_name)
+        else:
+            logger.info(
+                "Prior evaluation for %s: %s on %s (%s days ago), decision=%s "
+                "score=%s source=%s usable=%s matched_by=%s",
+                project_name,
+                prior.evaluation_id,
+                prior.evaluated_at,
+                prior.days_since,
+                prior.decision,
+                prior.overall_score,
+                prior.source,
+                prior.usable,
+                prior.matched_by,
+            )
+        return prior
+
+    def _prior_summary(self, prior) -> JSONObject | None:
+        """A compact, JSON-safe record of which prior this run was compared to.
+
+        Written into the result and therefore into `reports.content`, so a later
+        reader can tell which earlier evaluation section 25 was measured
+        against instead of having to re-derive it:
+
+            SELECT content->'prior_evaluation'->>'evaluation_id' FROM reports;
+        """
+        if prior is None:
+            return None
+        outcome = prior.outcome
+        return {
+            "evaluation_id": prior.evaluation_id,
+            "evaluated_at": prior.evaluated_at.isoformat() if prior.evaluated_at else None,
+            "days_since": prior.days_since,
+            "matched_by": prior.matched_by,
+            "source": prior.source,
+            "usable": prior.usable,
+            "unusable_reason": prior.unusable_reason,
+            "decision": prior.decision,
+            "overall_score": prior.overall_score,
+            "signpost_count": len(prior.signposts),
+            "signposts_source": prior.signposts_source,
+            "review_date": prior.review_date.isoformat() if prior.review_date else None,
+            "review_date_passed": prior.review_date_passed,
+            "calibration_record_id": outcome.record_id if outcome else None,
+            "graded_horizons": outcome.graded_horizons if outcome else [],
+            "skipped_unusable": prior.skipped_unusable,
+        }
 
     async def _resolve_protocol(self, name: str, info: JSONObject) -> JSONObject:
         from app.tools import get_tool_registry

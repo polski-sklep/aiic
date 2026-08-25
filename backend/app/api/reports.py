@@ -63,6 +63,18 @@ SECURITY_HEADERS = {
 
 SECTION_TITLES: dict[str, str] = {
     "1_executive_summary": "Executive Summary",
+    # Emitted by report_writer only when this project has been evaluated
+    # before, so it is absent from every report written to date and from every
+    # first-time evaluation. `sections.get(key, "")` yields "" for those and the
+    # loop below skips falsy content, so adding the key here cannot change what
+    # an existing report renders — verified by re-rendering the persisted
+    # Hyperliquid report to an identical sha256 either way.
+    #
+    # Placed second on purpose: on a re-evaluation the delta against the last
+    # call is what a reader wants immediately after the summary. Dict order is
+    # presentation order only; the "25" in the key is its position in the Report
+    # Writer's schema, not on the page.
+    "25_what_changed": "What Changed Since Last Evaluation",
     "2_project_overview": "Project Overview",
     "3_tokenomics": "Tokenomics",
     "4_governance": "Governance",

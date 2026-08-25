@@ -33,6 +33,7 @@ Required Notion setup:
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -122,18 +123,7 @@ async def get_page_content(page_id: str) -> NotionPageContent:
 
     page = cast(Mapping[str, object], await client.pages.retrieve(page_id=page_id))
 
-    blocks: list[Mapping[str, object]] = []
-    cursor: str | None = None
-    while True:
-        kwargs: dict[str, object] = {"block_id": page_id, "page_size": 100}
-        if cursor:
-            kwargs["start_cursor"] = cursor
-        response = await client.blocks.children.list(**kwargs)
-        blocks.extend(cast(list[Mapping[str, object]], response.get("results", [])))
-        if not response.get("has_more"):
-            break
-        cursor = cast(str | None, response.get("next_cursor"))
-
+    blocks = await _list_children(client, page_id)
     text_content = _blocks_to_text(blocks)
 
     return {
@@ -181,12 +171,15 @@ async def create_transcript(
         await client.pages.create(
             parent={"database_id": settings.notion_transcripts_db},
             properties=properties,
-            children=children,
+            children=children[:NOTION_CHILDREN_LIMIT],
         ),
     )
+    page_id = str(page["id"])
+    # pages.create caps `children` at 100 blocks; long content lands as appends.
+    await append_blocks(page_id, children[NOTION_CHILDREN_LIMIT:], client=client)
 
-    logger.info("Created transcript page: %s", page["id"])
-    return str(page["id"])
+    logger.info("Created transcript page: %s (%s blocks)", page_id, len(children))
+    return page_id
 
 
 async def create_learning(
@@ -219,12 +212,15 @@ async def create_learning(
         await client.pages.create(
             parent={"database_id": settings.notion_learnings_db},
             properties=properties,
-            children=children,
+            children=children[:NOTION_CHILDREN_LIMIT],
         ),
     )
+    page_id = str(page["id"])
+    # pages.create caps `children` at 100 blocks; long content lands as appends.
+    await append_blocks(page_id, children[NOTION_CHILDREN_LIMIT:], client=client)
 
-    logger.info("Created learning page: %s", page["id"])
-    return str(page["id"])
+    logger.info("Created learning page: %s (%s blocks)", page_id, len(children))
+    return page_id
 
 
 async def update_project_evaluation(
@@ -234,8 +230,16 @@ async def update_project_evaluation(
     score: float | None = None,
     recommendation: str = "",
     report_summary: str = "",
+    report_blocks: list[dict[str, object]] | None = None,
 ) -> str:
-    """Create or update a project entry in the Projects database after evaluation."""
+    """Create or update a project entry in the Projects database after evaluation.
+
+    `report_blocks` is the preferred input: a list of already-built Notion
+    blocks (see `orchestrator._notion_write`). `report_summary` is the older
+    text path and is parsed as markdown into real blocks rather than dumped
+    into paragraphs. Whichever is supplied, the body is appended in
+    100-block batches so a long run does not 400 the request.
+    """
     settings = get_settings()
     if not settings.notion_projects_db:
         raise RuntimeError("NOTION_PROJECTS_DB not configured")
@@ -264,31 +268,41 @@ async def update_project_evaluation(
     if recommendation:
         properties["Recommendation"] = {"select": {"name": recommendation}}
 
+    if report_blocks is not None:
+        children: list[dict[str, object]] = list(report_blocks)
+    elif report_summary:
+        children = [divider_block()]
+        children.append(
+            heading_block(f"Evaluation {datetime.now(timezone.utc).strftime('%Y-%m-%d')}", 1)
+        )
+        children.extend(_text_to_blocks(report_summary))
+    else:
+        children = []
+
     existing_results = cast(list[Mapping[str, object]], existing.get("results", []))
     if existing_results:
         page_id = str(existing_results[0]["id"])
         await client.pages.update(page_id=page_id, properties=properties)
 
-        if report_summary:
-            children = _text_to_blocks(
-                f"\n---\n**Evaluation {datetime.now(timezone.utc).strftime('%Y-%m-%d')}**\n\n{report_summary}"
-            )
-            await client.blocks.children.append(block_id=page_id, children=children)
-
-        logger.info("Updated project page: %s", page_id)
+        appended = await append_blocks(page_id, children, client=client)
+        logger.info("Updated project page %s (%s blocks appended)", page_id, appended)
         return page_id
 
-    children = _text_to_blocks(report_summary) if report_summary else []
+    # pages.create also caps `children` at 100; the remainder is appended.
+    head, tail = children[:NOTION_CHILDREN_LIMIT], children[NOTION_CHILDREN_LIMIT:]
     page = cast(
         Mapping[str, object],
         await client.pages.create(
             parent={"database_id": settings.notion_projects_db},
             properties=properties,
-            children=children,
+            children=head,
         ),
     )
-    logger.info("Created project page: %s", page["id"])
-    return str(page["id"])
+    page_id = str(page["id"])
+    if tail:
+        await append_blocks(page_id, tail, client=client)
+    logger.info("Created project page %s (%s blocks)", page_id, len(children))
+    return page_id
 
 
 # ---------------------------------------------------------------------------
@@ -350,14 +364,48 @@ async def sync_database_to_pgvector(database_id: str, source_type: str) -> int:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _blocks_to_text(blocks: Sequence[Mapping[str, object]]) -> str:
-    """Convert Notion blocks to plain text."""
+async def _list_children(
+    client: AsyncClient,
+    block_id: str,
+    depth: int = 2,
+) -> list[Mapping[str, object]]:
+    """List a block's children, descending into nested blocks.
+
+    Toggles hold the per-agent findings, and their children are a separate
+    fetch. Without this recursion `get_page_content` — and therefore the
+    Notion->pgvector sync — would read a project page as a list of empty toggle
+    headers, silently losing the archive it is there to preserve.
+    """
+    blocks: list[Mapping[str, object]] = []
+    cursor: str | None = None
+    while True:
+        kwargs: dict[str, object] = {"block_id": block_id, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        response = await client.blocks.children.list(**kwargs)
+        for block in cast(list[Mapping[str, object]], response.get("results", [])):
+            entry = dict(block)
+            if block.get("has_children") and depth > 0:
+                entry["_children"] = await _list_children(client, str(block["id"]), depth - 1)
+            blocks.append(entry)
+        if not response.get("has_more"):
+            break
+        cursor = cast(str | None, response.get("next_cursor"))
+    return blocks
+
+
+def _blocks_to_text(blocks: Sequence[Mapping[str, object]], indent: str = "") -> str:
+    """Convert Notion blocks to plain text, including nested children."""
     parts: list[str] = []
     for block in blocks:
         block_type = str(block.get("type", ""))
         block_data = _as_mapping(block.get(block_type, {}))
 
-        if "rich_text" in block_data:
+        if block_type == "code":
+            code_text = _join_plain_text(block_data.get("rich_text", []))
+            lang = str(block_data.get("language", ""))
+            parts.append(f"{indent}```{lang}\n{code_text}\n```")
+        elif "rich_text" in block_data:
             text = _join_plain_text(block_data.get("rich_text", []))
             if block_type.startswith("heading") and block_type[-1].isdigit():
                 text = f"{'#' * int(block_type[-1])} {text}"
@@ -365,49 +413,417 @@ def _blocks_to_text(blocks: Sequence[Mapping[str, object]]) -> str:
                 text = f"• {text}"
             elif block_type == "numbered_list_item":
                 text = f"- {text}"
-            parts.append(text)
+            elif block_type == "quote":
+                text = f"> {text}"
+            elif block_type == "callout":
+                icon = _as_mapping(block_data.get("icon", {})).get("emoji", "")
+                text = f"{icon} {text}".strip()
+            elif block_type == "toggle":
+                text = f"▸ {text}"
+            parts.append(f"{indent}{text}")
         elif block_type == "divider":
-            parts.append("---")
-        elif block_type == "code":
-            code_text = _join_plain_text(block_data.get("rich_text", []))
-            lang = str(block_data.get("language", ""))
-            parts.append(f"```{lang}\n{code_text}\n```")
+            parts.append(f"{indent}---")
+
+        children = block.get("_children") or _as_mapping(block.get(block_type, {})).get("children")
+        if children:
+            nested = _blocks_to_text(cast(Sequence[Mapping[str, object]], children), indent + "  ")
+            if nested:
+                parts.append(nested)
 
     return "\n".join(parts)
 
 
-def _text_to_blocks(text: str, max_block_size: int = 1900) -> list[dict[str, object]]:
-    """Convert plain text to Notion paragraph blocks."""
-    blocks: list[dict[str, object]] = []
-    lines = text.split("\n")
-    current_chunk = ""
+# ---------------------------------------------------------------------------
+# Notion block construction
+#
+# Notion's API does not interpret markdown inside a rich-text `content` field.
+# Bold is `annotations.bold`, headings are `heading_N` blocks, bullets are
+# `bulleted_list_item` blocks. Writing "**name**" into a paragraph therefore
+# renders the asterisks literally, which is exactly what every project page
+# written before this module looked like.
+#
+# For five of the six projects in the calibration corpus the Notion page is the
+# only surviving record of the committee's reasoning (docs/CONTRACTS.md 2.5),
+# so this is an archival surface. Two rules follow from that:
+#   * nothing is dropped silently — over-long text is split, and on the one
+#     path where a hard cap can still bite, a visible marker is written into
+#     the page saying so;
+#   * every API limit below is enforced here rather than discovered as a 400
+#     from `children.append` halfway through a 15-agent run.
+# ---------------------------------------------------------------------------
 
-    for line in lines:
-        if len(current_chunk) + len(line) + 1 > max_block_size:
-            if current_chunk:
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "paragraph",
-                        "paragraph": {
-                            "rich_text": [{"type": "text", "text": {"content": current_chunk}}]
-                        },
-                    }
-                )
-            current_chunk = line
+# Hard Notion API limits. https://developers.notion.com/reference/request-limits
+NOTION_TEXT_LIMIT = 2000       # characters per rich-text object
+NOTION_RICH_TEXT_LIMIT = 100   # rich-text objects per array
+NOTION_CHILDREN_LIMIT = 100    # blocks per children.append / pages.create call
+NOTION_URL_LIMIT = 2000        # characters in a link url
+
+# Hosts that a Notion reader's browser cannot resolve. The VPS runs with
+# BACKEND_URL=http://localhost:8100 (verified 25 Aug 2026), which is correct for
+# the container and useless as a hyperlink in a page Jacob opens on his laptop.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"})
+
+# The Tailscale address the Telegram bot already serves report links from, used
+# only when nothing better is configured. Set COMMITTEE_REPORT_BASE (the same
+# variable telegram_bot.py reads) to override.
+_FALLBACK_REPORT_BASE = "http://100.95.239.105:8100"
+
+
+def resolve_report_base() -> str:
+    """Return a base URL for report links that is reachable from a browser.
+
+    Order: COMMITTEE_REPORT_BASE, then settings.backend_url if it is not a
+    loopback address, then the Tailscale address the bot uses.
+    """
+    import os
+    from urllib.parse import urlsplit
+
+    configured = os.environ.get("COMMITTEE_REPORT_BASE", "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    backend = (get_settings().backend_url or "").strip().rstrip("/")
+    if backend and urlsplit(backend).hostname not in _LOOPBACK_HOSTS:
+        return backend
+
+    logger.info(
+        "backend_url=%r is not reachable from a browser; linking reports via %s. "
+        "Set COMMITTEE_REPORT_BASE to change this.",
+        backend,
+        _FALLBACK_REPORT_BASE,
+    )
+    return _FALLBACK_REPORT_BASE
+
+
+def split_text(text: str, limit: int = NOTION_TEXT_LIMIT) -> list[str]:
+    """Split text into pieces of at most `limit` characters, on word boundaries.
+
+    Never drops characters: concatenating the result (with single spaces where a
+    break fell on whitespace) reproduces the input.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    pieces: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = max(window.rfind("\n"), window.rfind(" "))
+        if cut <= limit // 2:  # no usable break point — hard cut
+            cut = limit
+        pieces.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        pieces.append(remaining)
+    return pieces
+
+
+def rich_text(
+    content: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+    code: bool = False,
+    underline: bool = False,
+    strikethrough: bool = False,
+    color: str = "",
+    link: str = "",
+) -> list[dict[str, object]]:
+    """Build rich-text objects for one run of text, split to the 2,000-char cap."""
+    annotations: dict[str, object] = {}
+    if bold:
+        annotations["bold"] = True
+    if italic:
+        annotations["italic"] = True
+    if code:
+        annotations["code"] = True
+    if underline:
+        annotations["underline"] = True
+    if strikethrough:
+        annotations["strikethrough"] = True
+    if color:
+        annotations["color"] = color
+
+    href = link[:NOTION_URL_LIMIT] if link else ""
+
+    objects: list[dict[str, object]] = []
+    for piece in split_text(content):
+        if not piece:
+            continue
+        text_payload: dict[str, object] = {"content": piece}
+        if href:
+            text_payload["link"] = {"url": href}
+        obj: dict[str, object] = {"type": "text", "text": text_payload}
+        if annotations:
+            obj["annotations"] = dict(annotations)
+        objects.append(obj)
+    return objects
+
+
+# Inline markdown: [text](url), **bold**, `code`, _italic_ / *italic*.
+_INLINE_PATTERN = re.compile(
+    r"\[(?P<ltext>[^\]\n]*)\]\((?P<lurl>[^\s)]+)\)"
+    r"|\*\*(?P<bold>.+?)\*\*"
+    r"|`(?P<code>[^`\n]+)`"
+    r"|(?<![A-Za-z0-9_])_(?P<uital>[^_\n]+)_(?![A-Za-z0-9_])"
+    r"|(?<!\*)\*(?P<ital>[^*\n]+)\*(?!\*)",
+    re.DOTALL,
+)
+
+
+def inline_rich_text(text: str) -> list[dict[str, object]]:
+    """Convert inline markdown into annotated rich text.
+
+    This is the fix for the literal `**` asterisks: `**tokenomics_analyst**`
+    becomes a rich-text object with `annotations.bold = true` instead of four
+    stray characters in a paragraph.
+    """
+    objects: list[dict[str, object]] = []
+    cursor = 0
+    for match in _INLINE_PATTERN.finditer(text):
+        if match.start() > cursor:
+            objects.extend(rich_text(text[cursor:match.start()]))
+        if match.group("ltext") is not None:
+            url = match.group("lurl")
+            objects.extend(rich_text(match.group("ltext") or url, link=url))
+        elif match.group("bold") is not None:
+            objects.extend(rich_text(match.group("bold"), bold=True))
+        elif match.group("code") is not None:
+            objects.extend(rich_text(match.group("code"), code=True))
+        elif match.group("uital") is not None:
+            objects.extend(rich_text(match.group("uital"), italic=True))
         else:
-            current_chunk = f"{current_chunk}\n{line}" if current_chunk else line
+            objects.extend(rich_text(match.group("ital"), italic=True))
+        cursor = match.end()
+    if cursor < len(text):
+        objects.extend(rich_text(text[cursor:]))
+    return objects or rich_text(text)
 
-    if current_chunk:
-        blocks.append(
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": current_chunk}}]
-                },
-            }
-        )
+
+def _cap_rich_text(objects: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+    """Chunk a rich-text array to Notion's 100-object limit, losing nothing."""
+    if len(objects) <= NOTION_RICH_TEXT_LIMIT:
+        return [objects]
+    return [
+        objects[i:i + NOTION_RICH_TEXT_LIMIT]
+        for i in range(0, len(objects), NOTION_RICH_TEXT_LIMIT)
+    ]
+
+
+def _text_block(
+    block_type: str,
+    objects: list[dict[str, object]],
+    extra: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
+    """One or more blocks of `block_type`, splitting past the rich-text cap."""
+    blocks: list[dict[str, object]] = []
+    for chunk in _cap_rich_text(objects):
+        payload: dict[str, object] = {"rich_text": chunk}
+        if extra:
+            payload.update(extra)
+        blocks.append({"object": "block", "type": block_type, block_type: payload})
+    return blocks
+
+
+def heading_block(text: str, level: int = 2, *, toggleable: bool = False) -> dict[str, object]:
+    level = min(max(level, 1), 3)
+    block_type = f"heading_{level}"
+    payload: dict[str, object] = {"rich_text": inline_rich_text(text)[:NOTION_RICH_TEXT_LIMIT]}
+    if toggleable:
+        payload["is_toggleable"] = True
+    return {"object": "block", "type": block_type, block_type: payload}
+
+
+def paragraph_blocks(text: str) -> list[dict[str, object]]:
+    return _text_block("paragraph", inline_rich_text(text))
+
+
+def rich_paragraph_block(objects: list[dict[str, object]]) -> list[dict[str, object]]:
+    return _text_block("paragraph", objects)
+
+
+def bullet_blocks(text: str) -> list[dict[str, object]]:
+    return _text_block("bulleted_list_item", inline_rich_text(text))
+
+
+def rich_bullet_block(objects: list[dict[str, object]]) -> list[dict[str, object]]:
+    return _text_block("bulleted_list_item", objects)
+
+
+def numbered_blocks(text: str) -> list[dict[str, object]]:
+    return _text_block("numbered_list_item", inline_rich_text(text))
+
+
+def quote_blocks(text: str) -> list[dict[str, object]]:
+    return _text_block("quote", inline_rich_text(text))
+
+
+def code_block(text: str, language: str = "plain text") -> list[dict[str, object]]:
+    return _text_block("code", rich_text(text), {"language": language})
+
+
+def divider_block() -> dict[str, object]:
+    return {"object": "block", "type": "divider", "divider": {}}
+
+
+def callout_block(
+    objects: list[dict[str, object]],
+    *,
+    emoji: str = "💡",
+    color: str = "gray_background",
+) -> dict[str, object]:
+    return {
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": objects[:NOTION_RICH_TEXT_LIMIT],
+            "icon": {"type": "emoji", "emoji": emoji},
+            "color": color,
+        },
+    }
+
+
+def toggle_block(
+    summary: list[dict[str, object]],
+    children: list[dict[str, object]],
+) -> dict[str, object]:
+    """A collapsible section. Children are capped to the per-array limit."""
+    return {
+        "object": "block",
+        "type": "toggle",
+        "toggle": {
+            "rich_text": summary[:NOTION_RICH_TEXT_LIMIT],
+            "children": children[:NOTION_CHILDREN_LIMIT],
+        },
+    }
+
+
+def truncation_notice(what: str) -> dict[str, object]:
+    """A visible marker. Content is never cut without one of these."""
+    return callout_block(
+        rich_text(f"Truncated to fit Notion's block limits: {what}", italic=True),
+        emoji="✂️",
+        color="orange_background",
+    )
+
+
+def batch_blocks(
+    blocks: list[dict[str, object]],
+    size: int = NOTION_CHILDREN_LIMIT,
+) -> list[list[dict[str, object]]]:
+    """Split a block list into children.append-sized batches."""
+    return [blocks[i:i + size] for i in range(0, len(blocks), size)] or [[]]
+
+
+async def append_blocks(
+    page_id: str,
+    blocks: list[dict[str, object]],
+    client: AsyncClient | None = None,
+) -> int:
+    """Append blocks to a page, batching to the 100-per-request limit.
+
+    Returns the number of blocks appended. Batches are sent in order so a
+    failure part-way leaves a prefix of the run on the page rather than nothing.
+    """
+    if not blocks:
+        return 0
+    client = client or get_notion_client()
+    appended = 0
+    for batch in batch_blocks(blocks):
+        if not batch:
+            continue
+        await client.blocks.children.append(block_id=page_id, children=batch)
+        appended += len(batch)
+    return appended
+
+
+# ---------------------------------------------------------------------------
+# Markdown -> blocks
+# ---------------------------------------------------------------------------
+
+_BULLET_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+_NUMBERED_RE = re.compile(r"^\s*\d+[.)]\s+(.*)$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_DIVIDER_RE = re.compile(r"^\s*(?:---+|\*\*\*+|___+)\s*$")
+_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+
+
+def _text_to_blocks(text: str, max_block_size: int = NOTION_TEXT_LIMIT) -> list[dict[str, object]]:
+    """Convert markdown-ish text into real Notion blocks.
+
+    Headings, bullets, numbered items, quotes, dividers and fenced code become
+    the corresponding block types; `**bold**`, `_italic_`, `` `code` `` and
+    `[text](url)` become annotations rather than literal characters.
+    """
+    blocks: list[dict[str, object]] = []
+    paragraph: list[str] = []
+    code_lines: list[str] | None = None
+    code_lang = "plain text"
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            joined = "\n".join(paragraph).strip()
+            if joined:
+                blocks.extend(_text_block("paragraph", inline_rich_text(joined)))
+            paragraph = []
+
+    for line in text.split("\n"):
+        if code_lines is not None:
+            if line.strip().startswith("```"):
+                blocks.extend(code_block("\n".join(code_lines), code_lang))
+                code_lines = None
+                code_lang = "plain text"
+            else:
+                code_lines.append(line)
+            continue
+
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush_paragraph()
+            code_lines = []
+            code_lang = stripped[3:].strip() or "plain text"
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            continue
+
+        if _DIVIDER_RE.match(stripped):
+            flush_paragraph()
+            blocks.append(divider_block())
+            continue
+
+        heading = _HEADING_RE.match(stripped)
+        if heading:
+            flush_paragraph()
+            blocks.append(heading_block(heading.group(2), min(len(heading.group(1)), 3)))
+            continue
+
+        bullet = _BULLET_RE.match(line)
+        if bullet:
+            flush_paragraph()
+            blocks.extend(bullet_blocks(bullet.group(1)))
+            continue
+
+        numbered = _NUMBERED_RE.match(line)
+        if numbered:
+            flush_paragraph()
+            blocks.extend(numbered_blocks(numbered.group(1)))
+            continue
+
+        quote = _QUOTE_RE.match(line)
+        if quote:
+            flush_paragraph()
+            blocks.extend(quote_blocks(quote.group(1)))
+            continue
+
+        paragraph.append(line)
+
+    if code_lines is not None:  # unterminated fence
+        blocks.extend(code_block("\n".join(code_lines), code_lang))
+    flush_paragraph()
 
     return blocks
 

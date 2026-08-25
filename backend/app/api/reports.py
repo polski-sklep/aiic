@@ -762,7 +762,7 @@ def _decision_style(decision: str) -> tuple[str, str, str]:
     return DECISION_STYLES.get(key, ("unknown", "•", key.replace("_", " ").title() or "Undecided"))
 
 
-def _render_report_html(parts: ReportParts) -> str:
+def _render_report_html(parts: ReportParts, show_actions: bool = True) -> str:
     fn_ids = frozenset(int(f["id"]) for f in parts.footnotes if str(f.get("id", "")).isdigit())
     toc: list[tuple[str, str]] = []
     lede: list[str] = []   # masthead, banners, decision hero — always above the fold
@@ -790,9 +790,12 @@ def _render_report_html(parts: ReportParts) -> str:
     # The download row. `evaluation_id` is a parsed UUID by the time it lands
     # in ReportParts, so the hrefs below cannot carry anything but hex and
     # dashes — no escaping question arises. Omitted when the id is unknown
-    # (only reachable from a direct _render_report_html call in a test).
+    # (only reachable from a direct _render_report_html call in a test), and
+    # omitted from the downloaded copy: its hrefs are site-relative, so in a
+    # file:// copy they would resolve against the local disk and 404. A saved
+    # page should not offer to download itself anyway.
     actions_html = ""
-    if parts.evaluation_id:
+    if parts.evaluation_id and show_actions:
         base = f"/api/reports/{_esc(parts.evaluation_id)}"
         actions_html = (
             '<p class="actions">'
@@ -1277,7 +1280,7 @@ async def get_html(
     title = f"{parts.project_name} — {label} · AIIC Committee Report"
     return _html_response(
         title,
-        _render_report_html(parts),
+        _render_report_html(parts, show_actions=not download),
         extra_head=REPORT_HEAD_CSS,
         extra_headers=_attachment_headers(parts, "html") if download else None,
     )

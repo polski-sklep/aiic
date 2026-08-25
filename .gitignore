@@ -48,3 +48,7 @@ logs/
 # them as untracked directories, so without this a `git add -A` would commit
 # twelve full checkouts into the repo itself.
 /worktrees/
+
+# === Telegram bot runtime state ===
+# Persisted evaluation queue. Runtime data, and it carries chat ids.
+bot_queue.json

@@ -210,7 +210,14 @@ class CommitteeChair(BaseAgent):
     )
     tier = ModelTier.STRONG
     tool_names = []
-    max_tokens = 4096
+    # The Chair emits summary, reasoning, an adjudication_trace, signposts and a
+    # footnotes array in one JSON object. At 4096 it ran out mid-string on
+    # Hyperliquid — the JSON was unparseable, `decision` was lost, and the
+    # orchestrator's fallback wrote INSUFFICIENT_DATA into the calibration ledger
+    # for a run whose own preamble read "the committee and Ray converge on PASS".
+    # A truncated adjudication is not a verdict, and it must not be recorded as
+    # one. Sized with room for the deeper report it now reads.
+    max_tokens = 16384
 
     def get_system_prompt(self, context: JSONObject) -> str:
         from app.memory import get_agent_context

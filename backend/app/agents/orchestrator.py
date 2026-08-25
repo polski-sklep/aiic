@@ -736,7 +736,9 @@ class Orchestrator:
         }
 
         project_metadata = context.get("project_info", {})
-        await self._notion_write(project_name, project_metadata, agent_results, overall, decision)
+        await self._notion_write(
+            project_name, project_metadata, agent_results, overall, decision, evaluation_id
+        )
 
         try:
             from app.knowledge.calibration import record_calibration
@@ -862,35 +864,203 @@ class Orchestrator:
             "sources": result.sources,
         }
 
-    async def _notion_write(self, name, info, results, score, rec):
+    # Recommendation -> callout styling. Notion colours are fixed names, and the
+    # decision is the one thing a reader should register before reading anything
+    # else, so it gets the colour rather than the prose.
+    _NOTION_DECISION_STYLE: dict[str, tuple[str, str]] = {
+        "INVEST": ("🟢", "green_background"),
+        "BUY": ("🟢", "green_background"),
+        "WATCH": ("🟡", "yellow_background"),
+        "PASS": ("🔴", "red_background"),
+        "VETO": ("⛔", "red_background"),
+        "INSUFFICIENT_DATA": ("⚪", "gray_background"),
+    }
+
+    # Agents whose output is the decision itself or a rendering of it, rather
+    # than a finding. The Chair is pulled out separately below.
+    _NOTION_SKIP_AGENTS = frozenset({"report_writer", "ray_dalio", "committee_chair"})
+
+    def _notion_blocks(self, name, info, results, score, rec, evaluation_id=None):
+        """Build the Notion page body for one evaluation run as real blocks.
+
+        Everything here used to be one flat markdown string dropped into
+        paragraph blocks, which is why the live pages read as walls of text with
+        literal `**` in them. The shape is: a colour-coded decision callout,
+        links out to the full report, the Chair's reasoning, the convergence-
+        ranked risks as an actual bulleted list, then one collapsible section
+        per agent. A divider leads each run because the writer appends on every
+        re-evaluation and the runs otherwise ran together.
+        """
+        from datetime import datetime, timezone
+
+        from app.tools.notion import (
+            bullet_blocks,
+            callout_block,
+            divider_block,
+            heading_block,
+            paragraph_blocks,
+            resolve_report_base,
+            rich_bullet_block,
+            rich_paragraph_block,
+            rich_text,
+            quote_blocks,
+            toggle_block,
+        )
+
+        emoji, colour = self._NOTION_DECISION_STYLE.get(
+            str(rec).upper(), ("⚪", "gray_background")
+        )
+        chair = results.get("committee_chair")
+        chair_output = chair.output if chair and isinstance(chair.output, dict) else {}
+        conviction = str(chair_output.get("conviction_level", "") or "")
+
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        blocks: list[dict] = [
+            divider_block(),
+            heading_block(f"Evaluation — {stamp}", 1),
+        ]
+
+        headline = rich_text(str(rec or "NO DECISION"), bold=True)
+        score_text = "n/a" if score is None else f"{float(score):g}"
+        detail = f"  ·  score {score_text}/100"
+        if conviction:
+            detail += f"  ·  conviction: {conviction}"
+        ticker = str(info.get("ticker", "") or "")
+        if ticker:
+            detail += f"  ·  {ticker.upper()}"
+        headline.extend(rich_text(detail))
+        blocks.append(callout_block(headline, emoji=emoji, color=colour))
+
+        # Full report links. The committee's detailed output lives behind the
+        # reports API; the page is the index into it, not a replacement for it.
+        if evaluation_id:
+            base = resolve_report_base()
+            link_line = rich_text("Full report: ")
+            link_line.extend(
+                rich_text("HTML", bold=True, link=f"{base}/api/reports/{evaluation_id}/html")
+            )
+            link_line.extend(rich_text("  ·  "))
+            link_line.extend(
+                rich_text("Markdown", bold=True, link=f"{base}/api/reports/{evaluation_id}/markdown")
+            )
+            blocks.extend(rich_paragraph_block(link_line))
+            # The id is written as plain text as well: if the host in the links
+            # above ever stops resolving, the evaluation is still recoverable
+            # from the id alone, which is the failure mode CONTRACTS 2.5 records.
+            id_line = rich_text("evaluation id: ")
+            id_line.extend(rich_text(str(evaluation_id), code=True))
+            blocks.extend(rich_paragraph_block(id_line))
+
+        chair_reasoning = str(chair_output.get("reasoning", "") or "")
+        chair_summary = str(chair_output.get("summary", "") or "")
+        if chair_summary or chair_reasoning:
+            blocks.append(heading_block("Chair's verdict", 2))
+            blocks.extend(quote_blocks(chair_summary or chair_reasoning))
+            if chair_reasoning and chair_summary:
+                blocks.extend(paragraph_blocks(chair_reasoning))
+
+        # Convergence-ranked risks, as a real list. dedupe_risks ranks by the
+        # number of distinct agents that named each risk; that count is the
+        # strongest signal this committee produces, so it is stated in bold
+        # rather than left implicit in an attribution line.
+        risks = dedupe_risks(results, set(self._NOTION_SKIP_AGENTS))
+        if risks:
+            blocks.append(heading_block("Key risks", 2))
+            for risk in risks:
+                count = int(risk["agent_count"])
+                agents = ", ".join(risk["agents"])
+                line = []
+                if count > 1:
+                    line.extend(
+                        rich_text(f"[{count} agents] ", bold=True, color="red")
+                    )
+                line.extend(rich_text(str(risk["text"])))
+                line.extend(rich_text(f"  — {agents}", italic=True, color="gray"))
+                blocks.extend(rich_bullet_block(line))
+
+        # One collapsible section per agent, name in real bold, score alongside.
+        findings: list[dict] = []
+        for agent_name, result in results.items():
+            if agent_name in self._NOTION_SKIP_AGENTS:
+                continue
+            if result.error or not isinstance(result.output, dict):
+                continue
+            summary = str(result.output.get("summary", "") or "")
+            key_findings = result.output.get("key_findings")
+            agent_risks = result.output.get("risks")
+            if not summary and not key_findings:
+                continue
+
+            # The raw agent_name, not a prettified form: it is the key in
+            # agent_outputs, and this page has outlived that table before.
+            label = rich_text(agent_name, bold=True)
+            score_text = "n/a" if result.score is None else f"{float(result.score):g}"
+            label.extend(rich_text(f"  —  score {score_text}", color="gray"))
+            confidence = str(result.output.get("confidence", "") or "")
+            if confidence:
+                label.extend(rich_text(f"  ·  confidence {confidence}", italic=True, color="gray"))
+
+            def listing(items, title, limit=12):
+                """Bullets for one of an agent's lists.
+
+                A cap is needed — a toggle's children share the parent block and
+                cannot spill into a follow-up append — but an overrun is stated
+                in the page rather than the list just stopping. The full report
+                is linked at the top of every run, so nothing is unrecoverable.
+                """
+                if not isinstance(items, list) or not items:
+                    return []
+                out = [heading_block(title, 3)]
+                for entry in items[:limit]:
+                    out.extend(bullet_blocks(str(entry)))
+                overflow = len(items) - limit
+                if overflow > 0:
+                    out.extend(
+                        rich_bullet_block(
+                            rich_text(
+                                f"+{overflow} more — see the full report linked above",
+                                italic=True,
+                                color="gray",
+                            )
+                        )
+                    )
+                return out
+
+            children: list[dict] = []
+            if summary:
+                children.extend(paragraph_blocks(summary))
+            children.extend(listing(key_findings, "Key findings"))
+            children.extend(listing(agent_risks, "Risks"))
+
+            findings.append(toggle_block(label, children))
+
+        if findings:
+            blocks.append(heading_block("Agent findings", 2))
+            blocks.extend(findings)
+
+        return blocks
+
+    async def _notion_write(self, name, info, results, score, rec, evaluation_id=None):
         from app.config import get_settings
 
         settings = get_settings()
-        if not settings.notion_api_key:
+        if not settings.notion_api_key or not settings.notion_projects_db:
             return
+        # Deliberately swallowing: a 15-agent run that succeeded must not be
+        # lost because a block append failed.
         try:
             from app.tools.notion import update_project_evaluation
 
-            summaries = []
-            skip_agents = {"report_writer", "ray_dalio", "committee_chair"}
-            for agent_name, result in results.items():
-                if agent_name in skip_agents:
-                    continue
-                if result.output and not result.error:
-                    summary = result.output.get("summary", "")
-                    if summary:
-                        summaries.append(f"**{agent_name}** (score: {result.score}): {summary}")
-
-            report_text = "\n\n".join(summaries)
-            report_text += format_risk_block(dedupe_risks(results, skip_agents))
-            if settings.notion_projects_db:
-                await update_project_evaluation(
-                    project_name=name,
-                    ticker=info.get("ticker", ""),
-                    category=info.get("category", ""),
-                    score=score,
-                    recommendation=rec,
-                    report_summary=report_text,
-                )
+            await update_project_evaluation(
+                project_name=name,
+                ticker=info.get("ticker", ""),
+                category=info.get("category", ""),
+                score=score,
+                recommendation=rec,
+                report_blocks=self._notion_blocks(
+                    name, info, results, score, rec, evaluation_id
+                ),
+            )
         except Exception as exc:
             logger.warning("Notion writeback failed: %s", exc)

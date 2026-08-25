@@ -822,6 +822,14 @@ async def append_blocks(
 #   after=<child block id>  -> inserted directly after that child      (works)
 #   after=<the page id>     -> 400 "Block ID (…) to append children after
 #                              is not parented by (…)"
+#   before=<child block id> -> 400 "body.before should be not present"
+#   PATCH/POST /v1/blocks/{id}/move -> 400 invalid_request_url (no such route)
+#   PATCH /v1/blocks/{id} with {"after": …} -> 400 validation_error; that
+#                              endpoint edits a block's content, not its place
+#
+# All four checked under Notion-Version 2022-06-28 and 2025-09-03. Reordering
+# would therefore mean delete-and-recreate on a surface where the page is the
+# only surviving copy of the reasoning, which is not a trade worth making.
 #
 # So the page carries one block we own — a header callout — as its first child,
 # and every run is inserted immediately after it. That header is the anchor:

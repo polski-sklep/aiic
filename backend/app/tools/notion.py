@@ -463,32 +463,33 @@ NOTION_URL_LIMIT = 2000        # characters in a link url
 # the container and useless as a hyperlink in a page Jacob opens on his laptop.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"})
 
-# The Tailscale address the Telegram bot already serves report links from, used
-# only when nothing better is configured. Set COMMITTEE_REPORT_BASE (the same
-# variable telegram_bot.py reads) to override.
+# The Tailscale address the Telegram bot already serves report links from
+# (COMMITTEE_REPORT_BASE in its own env), used only when BACKEND_URL is a
+# loopback address and so cannot be linked. Setting BACKEND_URL to a reachable
+# address on the VPS is the supported way to change this; it is read through
+# get_settings() rather than os.environ because CONTRACTS 3.5 forbids modules
+# reading configuration from the environment directly.
 _FALLBACK_REPORT_BASE = "http://100.95.239.105:8100"
 
 
 def resolve_report_base() -> str:
     """Return a base URL for report links that is reachable from a browser.
 
-    Order: COMMITTEE_REPORT_BASE, then settings.backend_url if it is not a
-    loopback address, then the Tailscale address the bot uses.
+    `settings.backend_url` is the container's own address. On the VPS it is
+    `http://localhost:8100` (verified 25 Aug 2026) — correct for the service,
+    dead as a hyperlink in a page Jacob opens on his laptop. When it points at
+    a loopback host the Tailscale address is used instead, which is the address
+    the Telegram bot already hands out for the same two endpoints.
     """
-    import os
     from urllib.parse import urlsplit
-
-    configured = os.environ.get("COMMITTEE_REPORT_BASE", "").strip()
-    if configured:
-        return configured.rstrip("/")
 
     backend = (get_settings().backend_url or "").strip().rstrip("/")
     if backend and urlsplit(backend).hostname not in _LOOPBACK_HOSTS:
         return backend
 
     logger.info(
-        "backend_url=%r is not reachable from a browser; linking reports via %s. "
-        "Set COMMITTEE_REPORT_BASE to change this.",
+        "backend_url=%r is a loopback address and cannot be linked from Notion; "
+        "using %s. Set BACKEND_URL to a reachable address to change this.",
         backend,
         _FALLBACK_REPORT_BASE,
     )

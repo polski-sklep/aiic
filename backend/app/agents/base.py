@@ -18,6 +18,39 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 15  # Max back-and-forth tool-calling rounds
 
+#: Heading that opens the volatile tail of a system prompt.
+#:
+#: Prompt caching is a strict prefix match, so everything an agent re-sends
+#: unchanged has to physically precede everything that varies. Text above this
+#: heading is stable for the life of an agent (identity, persona, institutional
+#: memory, instructions); text below it changes per evaluation (the date, the
+#: project, canonical metrics, retrieved prior knowledge).
+#:
+#: ``run`` splits the rendered prompt here and hands the provider two system
+#: blocks, so a cache breakpoint can sit on the stable half. An agent that
+#: overrides ``get_system_prompt`` and does not emit the heading simply gets one
+#: block and one breakpoint at the end of it — correct, just less reusable.
+SYSTEM_PROMPT_VOLATILE_HEADING = "=== THIS EVALUATION ==="
+
+
+def split_system_prompt(prompt: str) -> str | list[JSONObject]:
+    """Split a rendered system prompt into [stable, volatile] text blocks.
+
+    Returns the prompt unchanged when there is no volatile section to separate,
+    so the provider keeps its single-block path.
+    """
+    # Anchored on both sides so the heading cannot be matched where it merely
+    # appears inside a sentence, or inside a persona file that happens to use
+    # the same "=== ... ===" style.
+    marker = "\n\n" + SYSTEM_PROMPT_VOLATILE_HEADING + "\n"
+    head, sep, tail = prompt.partition(marker)
+    if not sep or not head.strip() or not tail.strip():
+        return prompt
+    return [
+        {"type": "text", "text": head},
+        {"type": "text", "text": sep + tail},
+    ]
+
 
 @dataclass
 class AgentResult:
@@ -31,6 +64,16 @@ class AgentResult:
     error: str | None = None
     tool_calls_made: list[str] = field(default_factory=list)
     sources: list[SourceRecord] = field(default_factory=list)
+    #: Prompt-cache accounting, summed over every tool round.
+    #:
+    #: ``tokens_input`` is the *uncached remainder only* — that is what the API
+    #: reports and it is now a fraction of the prompt actually sent. Total
+    #: prompt size for this agent is
+    #: ``tokens_input + cache_write_tokens + cache_read_tokens``; any cost
+    #: estimate must price the three separately (writes ~1.25x input, reads
+    #: ~0.1x input) rather than reading ``tokens_input`` alone.
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
 
 
 class BaseAgent:
@@ -87,18 +130,21 @@ class BaseAgent:
                 except OSError as exc:
                     logger.warning("Could not load trusted accounts from %s: %s", ta_path, exc)
 
+        # Ordering is load-bearing, not cosmetic. Prompt caching matches on an
+        # exact byte prefix, so every stable section has to sit above every
+        # volatile one: identity, persona, institutional memory and the
+        # instruction block first, then the date, the project and the
+        # per-evaluation data under SYSTEM_PROMPT_VOLATILE_HEADING. The project
+        # name used to sit in the middle, which re-cached everything below it on
+        # every scan.
         base = f"""You are the {self.name} on a personal crypto investment committee.
 
 {persona}
 
-Today is {today}. Use this date for all calculations involving time, age, and duration.
-
-You are evaluating: {project}
-
 {institutional_context}{trusted_accounts_context}
 
 INSTRUCTIONS:
-1. FIRST, use search_notes to check if there are prior evaluations, IC call transcripts, or learnings about this project or related projects. Use read_note to get full content of relevant results.
+1. FIRST, use search_notes to check if there are prior evaluations, IC call transcripts, or learnings about the project named in the THIS EVALUATION section below, or about related projects. Use read_note to get full content of relevant results.
 2. Use your other available tools to gather fresh data relevant to your role.
 3. Analyze the data thoroughly, incorporating any prior knowledge found.
 4. Apply the institutional memory above (mandate constraints, risk policy, thesis) to your assessment.
@@ -113,19 +159,30 @@ INSTRUCTIONS:
    - "data_sources": List of tools/sources you used.
    - "prior_context_used": Brief note on any prior knowledge incorporated, or "none".
    - "escalations": Any concerns to escalate to Risk Officer or Chair (list, or empty).
-   - "mandate_flags": Any mandate violations or constraints triggered (list of strings, or empty).
+   - "mandate_flags": Any mandate violations or constraints triggered (list of strings, or empty)."""
 
-Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
+        # --- everything below this line varies per evaluation ---
+        base += f"""
+
+{SYSTEM_PROMPT_VOLATILE_HEADING}
+
+Today is {today}. Use this date for all calculations involving time, age, and duration.
+
+You are evaluating: {project}"""
 
         case_ctx = context.get("case_context", {})
         canonical = case_ctx.get("canonical_metrics", {})
         if canonical:
             import json as _json
-            base += f"\n\nCANONICAL METRICS (use as baseline, flag discrepancies):\n{_json.dumps(canonical, default=str)}"
+            base += f"\n\nCANONICAL METRICS (use as baseline, flag discrepancies):\n{_json.dumps(canonical, default=str, sort_keys=True)}"
             base += f"\nCase timestamp: {case_ctx.get('case_time', 'unknown')}"
 
         if knowledge:
             base += f"\n\nRELEVANT PRIOR KNOWLEDGE:\n{knowledge}"
+
+        # The output contract stays last so it is the final thing the model
+        # reads, as it was before the reorder.
+        base += "\n\nRespond ONLY with valid JSON. No markdown, no commentary outside the JSON."
 
         return base
 
@@ -133,9 +190,21 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
     _base_tools: list[str] = ["search_notes", "read_note", "semantic_search_notes"]
 
     def get_tools(self) -> list[ToolDefinition]:
-        """Get tool definitions this agent can use (agent-specific + knowledge tools)."""
+        """Get tool definitions this agent can use (agent-specific + knowledge tools).
+
+        The order is deterministic and must stay that way. Tool definitions
+        render at position 0 of the cached prefix, ahead of the system prompt,
+        so a reordered tool array invalidates every cache breakpoint in the
+        request. This was ``list(set(...))``: ``set`` iteration order over
+        strings depends on PYTHONHASHSEED, which is randomised per process, so
+        each worker built a different tool order and no cache entry written by
+        one process could ever be read by another.
+
+        ``dict.fromkeys`` dedupes while preserving first-occurrence order, so
+        the agent's own declared ordering is kept rather than alphabetised.
+        """
         registry = get_tool_registry()
-        all_tool_names = list(set(self.tool_names + self._base_tools))
+        all_tool_names = list(dict.fromkeys(self.tool_names + self._base_tools))
         return registry.get_definitions(all_tool_names)
 
     async def run(self, context: JSONObject) -> AgentResult:
@@ -150,7 +219,7 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
         collected_sources: list[SourceRecord] = []
 
         messages = [
-            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="system", content=split_system_prompt(system_prompt)),
             LLMMessage(
                 role="user",
                 content=f"Evaluate {context.get('project_name', 'this project')} using your available tools. "
@@ -160,6 +229,8 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
 
         total_input = 0
         total_output = 0
+        total_cache_write = 0
+        total_cache_read = 0
         model_used = ""
 
         try:
@@ -174,6 +245,14 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
 
                 total_input += response.tokens_input
                 total_output += response.tokens_output
+                cache_write, cache_read = _cache_usage(response)
+                total_cache_write += cache_write
+                total_cache_read += cache_read
+                logger.info(
+                    "[%s] round %d tokens: input=%d cache_write=%d cache_read=%d output=%d",
+                    self.name, round_num, response.tokens_input,
+                    cache_write, cache_read, response.tokens_output,
+                )
                 model_used = response.model
 
                 # If no tool calls, we have the final response
@@ -188,6 +267,8 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
                         model_used=model_used,
                         tokens_input=total_input,
                         tokens_output=total_output,
+                        cache_write_tokens=total_cache_write,
+                        cache_read_tokens=total_cache_read,
                         latency_ms=int((time.monotonic() - start_time) * 1000),
                         tool_calls_made=tool_calls_made,
                         sources=dedupe_sources(collected_sources),
@@ -227,6 +308,8 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
                 model_used=model_used,
                 tokens_input=total_input,
                 tokens_output=total_output,
+                cache_write_tokens=total_cache_write,
+                cache_read_tokens=total_cache_read,
                 latency_ms=int((time.monotonic() - start_time) * 1000),
                 error="Max tool-calling rounds exceeded",
                 tool_calls_made=tool_calls_made,
@@ -241,6 +324,8 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
                 model_used=model_used,
                 tokens_input=total_input,
                 tokens_output=total_output,
+                cache_write_tokens=total_cache_write,
+                cache_read_tokens=total_cache_read,
                 latency_ms=int((time.monotonic() - start_time) * 1000),
                 error=str(e),
                 tool_calls_made=tool_calls_made,
@@ -325,6 +410,24 @@ Respond ONLY with valid JSON. No markdown, no commentary outside the JSON."""
             logger.warning("[%s] Discarding out-of-range score %r (expected 0-100)", self.name, score)
             return None
         return value
+
+
+def _cache_usage(response: LLMResponse) -> tuple[int, int]:
+    """``(cache_write_tokens, cache_read_tokens)`` for one response.
+
+    The counts live in the provider's raw ``usage`` block. A provider with no
+    prompt cache omits them, so both default to 0 rather than raising — a
+    missing metric must not take an agent down.
+    """
+    usage = response.raw.get("usage") if isinstance(response.raw, dict) else None
+    if not isinstance(usage, dict):
+        return 0, 0
+
+    def _count(key: str) -> int:
+        value = usage.get(key)
+        return value if isinstance(value, int) else 0
+
+    return _count("cache_creation_input_tokens"), _count("cache_read_input_tokens")
 
 
 def _strip_code_fence(text: str) -> str:

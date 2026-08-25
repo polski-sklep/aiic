@@ -237,8 +237,12 @@ async def update_project_evaluation(
     `report_blocks` is the preferred input: a list of already-built Notion
     blocks (see `orchestrator._notion_write`). `report_summary` is the older
     text path and is parsed as markdown into real blocks rather than dumped
-    into paragraphs. Whichever is supplied, the body is appended in
-    100-block batches so a long run does not 400 the request.
+    into paragraphs. Whichever is supplied, the body is written in batches
+    Notion will accept so a long run does not 400 the request.
+
+    On a page that already exists the run is written to the *top*, under the
+    history header, so the newest evaluation is the one a reader sees first
+    (see `prepend_blocks`). Nothing already on the page is moved or deleted.
     """
     settings = get_settings()
     if not settings.notion_projects_db:
@@ -284,13 +288,16 @@ async def update_project_evaluation(
         page_id = str(existing_results[0]["id"])
         await client.pages.update(page_id=page_id, properties=properties)
 
-        appended = await append_blocks(page_id, children, client=client)
-        logger.info("Updated project page %s (%s blocks appended)", page_id, appended)
+        written = await prepend_blocks(page_id, children, client=client)
+        logger.info("Updated project page %s (%s blocks written to the top)", page_id, written)
         return page_id
 
-    # pages.create is bound by the same two limits as an append.
-    head = batch_blocks(children)[0]
-    tail = children[len(head):]
+    # A new page is built with the history header as its first child, so every
+    # later run has a stable anchor to be inserted after. pages.create is bound
+    # by the same two limits as an append.
+    body: list[dict[str, object]] = [history_header_block(), *children]
+    head = batch_blocks(body)[0]
+    tail = body[len(head):]
     page = cast(
         Mapping[str, object],
         await client.pages.create(
@@ -301,8 +308,10 @@ async def update_project_evaluation(
     )
     page_id = str(page["id"])
     if tail:
+        # The first run's own tail still belongs below its head, so this one
+        # append is the only place the newest run is extended downwards.
         await append_blocks(page_id, tail, client=client)
-    logger.info("Created project page %s (%s blocks)", page_id, len(children))
+    logger.info("Created project page %s (%s blocks)", page_id, len(body))
     return page_id
 
 
@@ -796,6 +805,226 @@ async def append_blocks(
         await client.blocks.children.append(block_id=page_id, children=batch)
         appended += len(batch)
     return appended
+
+
+# ---------------------------------------------------------------------------
+# Newest-first ordering
+#
+# A project is re-evaluated repeatedly and the page grows without limit, so the
+# run a reader wants is the newest one and it must be at the top. Appending put
+# it at the bottom, which is how two runs came to read as one mashed page.
+#
+# Notion offers no prepend. `PATCH /v1/blocks/{block_id}/children` takes an
+# optional `after` naming an existing *child* block; there is no `before`, no
+# move/reorder endpoint, and no way to address absolute position zero. Verified
+# against the live API on 25 Aug 2026:
+#
+#   after=<child block id>  -> inserted directly after that child      (works)
+#   after=<the page id>     -> 400 "Block ID (…) to append children after
+#                              is not parented by (…)"
+#   before=<child block id> -> 400 "body.before should be not present"
+#   PATCH/POST /v1/blocks/{id}/move -> 400 invalid_request_url (no such route)
+#   PATCH /v1/blocks/{id} with {"after": …} -> 400 validation_error; that
+#                              endpoint edits a block's content, not its place
+#
+# All four checked under Notion-Version 2022-06-28 and 2025-09-03. Reordering
+# would therefore mean delete-and-recreate on a surface where the page is the
+# only surviving copy of the reasoning, which is not a trade worth making.
+#
+# So the page carries one block we own — a header callout — as its first child,
+# and every run is inserted immediately after it. That header is the anchor:
+# stable, self-describing, and created exactly once per page.
+#
+# Two further live findings shape the code below:
+#
+#   * The append response's `results` is NOT just the blocks created. With
+#     `after` set it returns the created blocks followed by every sibling that
+#     already came after them, so `results[-1]` is the last block on the page,
+#     not the last block written. The created blocks come first and in order,
+#     so the last one written is `results[len(batch) - 1]`. A multi-batch run
+#     that chained on `results[-1]` would look correct for a single batch and
+#     scramble on the second.
+#   * Nested children (a toggle's contents) are not returned in `results` at
+#     all, so the positional rule counts top-level entries only.
+#
+# Batches are therefore chained forward — each after the last block the
+# previous one wrote — rather than all inserted after the anchor. Inserting
+# every batch after the anchor would also produce the right order (each new
+# insert pushes the previous one down, confirmed live) but reverses the failure
+# mode: a part-written run would keep its tail and lose its head, and the head
+# is the decision callout, the report links and the evaluation id. Chaining
+# forward keeps the prefix, matching `append_blocks`.
+# ---------------------------------------------------------------------------
+
+# Marker text identifying the anchor. Matched on read, so it is a constant
+# rather than a literal at each site; changing it orphans existing headers and
+# a fresh one will be created beneath the old.
+HISTORY_HEADER_TEXT = "Evaluation history — newest first"
+
+
+def history_header_block() -> dict[str, object]:
+    """The page's first block: the anchor every run is inserted after."""
+    objects = rich_text(HISTORY_HEADER_TEXT, bold=True)
+    objects.extend(
+        rich_text(
+            "  ·  the most recent evaluation is directly below this block.",
+            italic=True,
+            color="gray",
+        )
+    )
+    return callout_block(objects, emoji="🕒", color="gray_background")
+
+
+def _rich_text_content(items: object) -> str:
+    """Text of a rich-text array, as read back *or* as built here.
+
+    A block returned by the API carries `plain_text`; one built by this module
+    has only `text.content`. `is_history_header` is asked about both — the
+    freshly built block and the one listed back off the page — so it reads
+    either.
+    """
+    parts: list[str] = []
+    for item in _as_sequence(items):
+        entry = _as_mapping(item)
+        text = entry.get("plain_text")
+        if text is None:
+            text = _as_mapping(entry.get("text", {})).get("content", "")
+        parts.append(str(text))
+    return "".join(parts)
+
+
+def is_history_header(block: Mapping[str, object]) -> bool:
+    """True if `block` is the anchor written by `history_header_block`."""
+    if str(block.get("type", "")) != "callout":
+        return False
+    text = _rich_text_content(_as_mapping(block.get("callout", {})).get("rich_text", []))
+    return text.startswith(HISTORY_HEADER_TEXT)
+
+
+def _normalise_id(value: object) -> str:
+    """Notion ids are the same id dashed or undashed; compare them normalised."""
+    return str(value).replace("-", "").lower()
+
+
+def _last_created_block_id(
+    response: Mapping[str, object],
+    batch_size: int,
+    parent_id: str,
+) -> str:
+    """Id of the last top-level block an append actually created.
+
+    Not `results[-1]`: with `after` set the response continues past the new
+    blocks into the siblings that already followed them (verified live). The
+    created blocks lead the array, so the one wanted is at `batch_size - 1`.
+    """
+    parent = _normalise_id(parent_id)
+    direct: list[Mapping[str, object]] = []
+    for entry in _as_sequence(response.get("results", [])):
+        block = _as_mapping(entry)
+        if not block.get("id"):
+            continue
+        owner = _as_mapping(block.get("parent", {}))
+        owner_id = owner.get("page_id") or owner.get("block_id")
+        if owner_id is not None and _normalise_id(owner_id) != parent:
+            continue  # a nested child, which cannot be used as an anchor
+        direct.append(block)
+
+    if len(direct) >= batch_size >= 1:
+        return str(direct[batch_size - 1]["id"])
+    if direct:
+        return str(direct[-1]["id"])
+    raise RuntimeError(
+        "Notion append returned no usable block id; cannot position the next batch"
+    )
+
+
+# How far down the page to look for an existing header. It is written at index
+# 0 on a page this module created and at index 1 on one it adopted, so a small
+# window suffices — and searching a window rather than only the first child is
+# what stops a second header being created on every run of an adopted page.
+# The slack above 1 lets the header still be found if someone types a note in
+# above it, in which case new runs go below that note, which is what they meant.
+_HEADER_SEARCH_WINDOW = 10
+
+
+async def history_anchor_id(page_id: str, client: AsyncClient | None = None) -> str:
+    """Return the anchor to insert new runs after, creating it if absent.
+
+    On a page this module created, the header is already the first child. On a
+    page written before newest-first ordering it is not, and there is no way to
+    put it at absolute position zero — so it goes immediately after whatever is
+    first (in practice the leading divider of the oldest run). Everything below
+    the header is then correctly ordered newest-first from that point on; only
+    that one legacy block stays stranded above it.
+
+    The header is looked for across the first few blocks, not just the first.
+    Checking only index 0 created a fresh header on every run of an adopted
+    page, because on such a page the header lives at index 1 and never moves up
+    — found on the live API, not in the unit tests, which ran a single write.
+    """
+    client = client or get_notion_client()
+    response = cast(
+        Mapping[str, object],
+        await client.blocks.children.list(block_id=page_id, page_size=_HEADER_SEARCH_WINDOW),
+    )
+    results = [_as_mapping(item) for item in _as_sequence(response.get("results", []))]
+
+    for block in results:
+        if is_history_header(block):
+            return str(block["id"])
+
+    if not results:
+        created = cast(
+            Mapping[str, object],
+            await client.blocks.children.append(
+                block_id=page_id, children=[history_header_block()]
+            ),
+        )
+        return _last_created_block_id(created, 1, page_id)
+
+    created = cast(
+        Mapping[str, object],
+        await client.blocks.children.append(
+            block_id=page_id,
+            children=[history_header_block()],
+            after=str(results[0]["id"]),
+        ),
+    )
+    logger.info("Added the newest-first header to existing Notion page %s", page_id)
+    return _last_created_block_id(created, 1, page_id)
+
+
+async def prepend_blocks(
+    page_id: str,
+    blocks: list[dict[str, object]],
+    client: AsyncClient | None = None,
+) -> int:
+    """Insert blocks at the top of a page, below the history header.
+
+    The counterpart of `append_blocks` and bound by the same two limits, so the
+    same `batch_blocks` budgeting applies. Batches are chained forward, so a
+    failure part-way leaves the head of the run on the page rather than its
+    tail — see the section header for why that direction was chosen.
+    """
+    if not blocks:
+        return 0
+    client = client or get_notion_client()
+
+    anchor = await history_anchor_id(page_id, client=client)
+
+    written = 0
+    for batch in batch_blocks(blocks):
+        if not batch:
+            continue
+        response = cast(
+            Mapping[str, object],
+            await client.blocks.children.append(
+                block_id=page_id, children=batch, after=anchor
+            ),
+        )
+        anchor = _last_created_block_id(response, len(batch), page_id)
+        written += len(batch)
+    return written
 
 
 # ---------------------------------------------------------------------------

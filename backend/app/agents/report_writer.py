@@ -40,6 +40,54 @@ def _truncate_on_boundary(text: str, limit: int) -> str:
     )
 
 
+# --- Section 25, emitted only when this project has been evaluated before ----
+#
+# The committee's standing defect is that it names what would change its mind
+# and then nothing ever checks (AIIC_HANDOFF.md 6.5; retrospective F8, "nothing
+# that is wrong ever costs anything"). Four of six live calibration records are
+# medium-confidence WATCHes whose signposts have never been revisited.
+#
+# The brief is deliberately adversarial about padding: the anti-padding rule
+# above applies with full force here, because "conditions remain broadly
+# unchanged" is exactly the sentence this section exists to prevent.
+_DELTA_BRIEF = """
+25. What changed since the last evaluation (200-350 words). This project has
+    been evaluated by this committee before. The previous decision, its score,
+    the signposts the Chair named as its own falsification criteria, its review
+    date and its price outcome are given in the PREVIOUS EVALUATION block
+    above. Answer four things, in this order:
+
+    (a) WHAT CHANGED. Only facts that this run's agents actually reported and
+        that differ from the previous evaluation's picture: metric moves with
+        both values and their dates, an unlock or vote or listing that has since
+        happened, a mechanism that has since activated, a competitor that has
+        since gained or lost. Numbers on both sides, or do not claim a change.
+
+    (b) EACH PREVIOUS SIGNPOST, ONE BY ONE. Take the signposts listed above in
+        order and mark each CROSSED, NOT CROSSED, or UNVERIFIABLE, with the
+        evidence and the agent that supplied it. UNVERIFIABLE is a legitimate
+        and common answer -- say which agent would have had to measure it. Do
+        not silently drop a signpost, and do not invent a verdict for one no
+        agent addressed.
+
+    (c) DOES THE PRIOR DECISION STILL HOLD. State the previous decision and
+        this report's recommendation. If they differ, name the specific finding
+        that moved it. If they agree, say whether that is because nothing
+        material changed or because offsetting things did.
+
+    (d) PRICE VERSUS BTC over the interval, using the figures given above --
+        entry price and date, the graded horizon, the return and the alpha. If
+        no checkpoint has been graded yet, say so in one line and stop; do not
+        estimate it from this run's spot price.
+
+    Where the previous evaluation produced no usable verdict, or where there is
+    no calibration record to compare against, say so in one line and move on.
+    One honest line beats a paragraph of hedging.
+"""
+
+_DELTA_SCHEMA = ',\n        "25_what_changed": "<brief 25, 200-350 words>"'
+
+
 class ReportWriter(BaseAgent):
     name = "report_writer"
     role_description = (
@@ -67,6 +115,18 @@ class ReportWriter(BaseAgent):
         prior = context.get("prior_agent_outputs", {})
         source_catalog = context.get("source_catalog", [])
 
+        # The previous evaluation of THIS project, if there was one.
+        #
+        # Empty string on a first-time evaluation, and everything below keys off
+        # that: no block, no section 25, no schema line, no extra instruction.
+        # A first run therefore produces a byte-identical prompt to the one this
+        # agent built before the delta work existed.
+        #
+        # This is the only agent in the pipeline that receives it. See the
+        # orchestrator's `prior_evaluation_context` block for why the eight data
+        # agents deliberately do not.
+        prior_evaluation = str(context.get("prior_evaluation_context", "") or "").strip()
+
         agent_dump = ""
         if prior:
             agent_dump = "\n\nALL AGENT OUTPUTS:\n"
@@ -75,6 +135,20 @@ class ReportWriter(BaseAgent):
                 agent_dump += f"\n--- {name} ---\n{_truncate_on_boundary(body, AGENT_DUMP_CHAR_LIMIT)}\n"
 
         source_text = format_source_catalog_text(source_catalog, limit=60)
+
+        section_count = 25 if prior_evaluation else 24
+        # The block carries its own "PREVIOUS EVALUATION OF <PROJECT>" heading,
+        # so it is inserted bare rather than under a second, duplicate one.
+        prior_block = f"\n{prior_evaluation}\n" if prior_evaluation else ""
+        delta_brief = _DELTA_BRIEF if prior_evaluation else ""
+        delta_schema = _DELTA_SCHEMA if prior_evaluation else ""
+        delta_check = (
+            "\nDid section 25 address every signpost named in the previous "
+            "evaluation individually, and state whether the prior decision "
+            "still holds?\n"
+            if prior_evaluation
+            else ""
+        )
 
         return f"""You are the Report Writer on the committee.
 
@@ -85,11 +159,11 @@ Evaluating: {project}
 
 SOURCE CATALOG:
 {source_text}
-
-COMPILE A 24-SECTION STRUCTURED REPORT from the agent outputs above.
+{prior_block}
+COMPILE A {section_count}-SECTION STRUCTURED REPORT from the agent outputs above.
 
 The fifteen agents above produced roughly 14,000 tokens of analysis. Your job is
-to carry that analysis forward at full strength, organised into 24 sections. You
+to carry that analysis forward at full strength, organised into {section_count} sections. You
 are not writing an abstract of the committee's work. A section that reads as two
 or three sentences touching a list of topics has failed, however well written.
 
@@ -307,7 +381,7 @@ arrays of strings.
     ones that would downgrade it. "Monitor governance developments" is not a
     signpost. "TVL below $800M on a 30-day average, checked monthly, would move
     this from WATCH to PASS" is.
-
+{delta_brief}
 OUTPUT JSON with this exact structure:
 {{
     "project_name": "{project}",
@@ -347,7 +421,7 @@ OUTPUT JSON with this exact structure:
         }},
         "22_overall_score": <weighted average>,
         "23_recommendation": "BUY|PASS|WATCH",
-        "24_signposts_to_monitor": ["<brief 24: 8-12 strings, 30-50 words each>"]
+        "24_signposts_to_monitor": ["<brief 24: 8-12 strings, 30-50 words each>"]{delta_schema}
     }},
     "summary": "Final 2-sentence summary",
     "score": <overall score>,
@@ -369,5 +443,5 @@ say what was missing? Did every figure and date in the agent outputs survive?
 Is every disagreement attributed to named agents? Does every marker you used
 appear in the footnotes array, and does every footnote resolve to the SOURCE
 CATALOG?
-
+{delta_check}
 Respond ONLY with valid JSON."""

@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -682,6 +682,20 @@ def _human_time(value: Any) -> str:
 
 _TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 
+# Styling for the download toolbar, kept here rather than in tpl.html because
+# the toolbar is emitted from this module and nothing else uses it. Reuses the
+# template's `.btn`, which the print stylesheet already hides; `.actions` is
+# hidden too so the row leaves no gap on a printed page or a saved PDF.
+REPORT_HEAD_CSS = (
+    "<style>"
+    ".actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+    "margin:18px 0 0}"
+    ".actions .btn{margin-top:0}"
+    ".actions .hint{font-size:.82rem;color:var(--muted)}"
+    "@media print{.actions{display:none !important}}"
+    "</style>"
+)
+
 
 def _page(title: str, body: str, extra_head: str = "") -> str:
     """Fill the shell template.
@@ -695,11 +709,19 @@ def _page(title: str, body: str, extra_head: str = "") -> str:
     return _TOKEN_RE.sub(lambda m: values.get(m.group(1), ""), template)
 
 
-def _html_response(title: str, body: str, status: int = 200, extra_head: str = "") -> HTMLResponse:
+def _html_response(
+    title: str,
+    body: str,
+    status: int = 200,
+    extra_head: str = "",
+    extra_headers: dict[str, str] | None = None,
+) -> HTMLResponse:
+    headers = dict(SECURITY_HEADERS)
+    headers.update(extra_headers or {})
     return HTMLResponse(
         content=_page(title, body, extra_head),
         status_code=status,
-        headers=dict(SECURITY_HEADERS),
+        headers=headers,
     )
 
 
@@ -740,7 +762,7 @@ def _decision_style(decision: str) -> tuple[str, str, str]:
     return DECISION_STYLES.get(key, ("unknown", "•", key.replace("_", " ").title() or "Undecided"))
 
 
-def _render_report_html(parts: ReportParts) -> str:
+def _render_report_html(parts: ReportParts, show_actions: bool = True) -> str:
     fn_ids = frozenset(int(f["id"]) for f in parts.footnotes if str(f.get("id", "")).isdigit())
     toc: list[tuple[str, str]] = []
     lede: list[str] = []   # masthead, banners, decision hero — always above the fold
@@ -765,11 +787,32 @@ def _render_report_html(parts: ReportParts) -> str:
     if parts.evaluation_id:
         head_bits.append(f'<span class="meta-item mono">{_esc(parts.evaluation_id)}</span>')
 
+    # The download row. `evaluation_id` is a parsed UUID by the time it lands
+    # in ReportParts, so the hrefs below cannot carry anything but hex and
+    # dashes — no escaping question arises. Omitted when the id is unknown
+    # (only reachable from a direct _render_report_html call in a test), and
+    # omitted from the downloaded copy: its hrefs are site-relative, so in a
+    # file:// copy they would resolve against the local disk and 404. A saved
+    # page should not offer to download itself anyway.
+    actions_html = ""
+    if parts.evaluation_id and show_actions:
+        base = f"/api/reports/{_esc(parts.evaluation_id)}"
+        actions_html = (
+            '<p class="actions">'
+            f'<a class="btn" href="{base}/markdown?download=1" '
+            'download>Download markdown</a>'
+            f'<a class="btn" href="{base}/html?download=1" download>Save this page</a>'
+            '<span class="hint">For a PDF, print this page and choose '
+            '&ldquo;Save as PDF&rdquo; — it has a print stylesheet.</span>'
+            "</p>"
+        )
+
     lede.append(
         '<header class="masthead">'
         '<p class="eyebrow">Investment Committee Report</p>'
         f"<h1>{_esc(parts.project_name)}</h1>"
         f'<p class="meta">{"".join(head_bits)}</p>'
+        f"{actions_html}"
         "</header>"
     )
 
@@ -1084,6 +1127,57 @@ async def _load_report_parts(evaluation_id: UUID, db: AsyncSession) -> ReportPar
 
 
 # --------------------------------------------------------------------------
+# Download: Content-Disposition and the filename that goes in it
+# --------------------------------------------------------------------------
+
+# Everything a filename may contain. Deliberately NARROWER than the
+# [A-Za-z0-9._-] the brief allows: only alphanumerics survive from untrusted
+# input and the separators are supplied by this module, so no input can produce
+# `.`, `..`, a leading dash, or a path separator no matter what it contains.
+_FILENAME_KEEP_RE = re.compile(r"[^A-Za-z0-9]+")
+
+# Long enough to stay recognisable, short enough that project name + date + the
+# `aiic-` prefix + extension stays well inside every filesystem's 255-byte limit.
+_SLUG_MAX = 60
+
+
+def _filename_slug(value: Any, fallback: str) -> str:
+    """Collapse arbitrary text to a lowercase `[a-z0-9-]` slug.
+
+    The inputs are hostile by provenance: `project_name` starts as a Telegram
+    message and `report_date` is whatever the Report Writer LLM emitted. A
+    header value is a single line by definition, so anything that could split
+    it — CR, LF, `"`, `;` — must not survive, and it does not: the regex keeps
+    alphanumerics only and replaces every other run with a single `-`.
+    """
+    slug = _FILENAME_KEEP_RE.sub("-", str(value or "")).strip("-").lower()
+    slug = slug[:_SLUG_MAX].strip("-")
+    return slug or fallback
+
+
+def _download_filename(parts: ReportParts, extension: str) -> str:
+    """`aiic-aave-2026-06-11.md` — safe by construction, never by filtering."""
+    name = _filename_slug(parts.project_name, "report")
+    date = _filename_slug(parts.report_date, "")
+    stem = f"aiic-{name}-{date}" if date else f"aiic-{name}"
+    return f"{stem}.{extension}"
+
+
+def _attachment_headers(parts: ReportParts, extension: str) -> dict[str, str]:
+    """Content-Disposition for a download, plus the headers it needs.
+
+    `nosniff` matters here specifically: a saved report is LLM-authored text
+    from the open internet, and a browser that sniffs a `.md` attachment as
+    HTML would undo the whole escape-first design of the HTML renderer.
+    """
+    filename = _download_filename(parts, extension)
+    return {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+# --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
 
@@ -1096,24 +1190,54 @@ async def get_index_html(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{evaluation_id}/markdown", response_class=PlainTextResponse)
-async def get_markdown_report(evaluation_id: UUID, db: AsyncSession = Depends(get_db)):
-    """Get a formatted markdown report for an evaluation."""
+async def get_markdown_report(
+    evaluation_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    download: bool = Query(
+        False, description="Serve as a file attachment instead of inline text."
+    ),
+):
+    """Get a formatted markdown report for an evaluation.
+
+    `?download=1` returns the same bytes with a `Content-Disposition:
+    attachment` header so the browser (or `curl -OJ`) saves a file. The inline
+    response is byte-for-byte unchanged, headers included — a link that worked
+    before still behaves exactly as it did.
+    """
     try:
         parts = await _load_report_parts(evaluation_id, db)
     except ReportUnavailable as exc:
         # Preserve the historical JSON status codes for scripted clients.
         status = 404 if exc.status_code == 404 else 400
         raise HTTPException(status_code=status, detail=exc.detail) from None
-    return _render_markdown(parts)
+    markdown = _render_markdown(parts)
+    if not download:
+        return markdown
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers=_attachment_headers(parts, "md"),
+    )
 
 
 @router.get("/{evaluation_id}/html", response_class=HTMLResponse)
-async def get_html(evaluation_id: str, db: AsyncSession = Depends(get_db)):
+async def get_html(
+    evaluation_id: str,
+    db: AsyncSession = Depends(get_db),
+    download: bool = Query(
+        False, description="Serve as a file attachment instead of rendering inline."
+    ),
+):
     """Server-rendered HTML report. No JavaScript, no external requests.
 
     `evaluation_id` is taken as `str` rather than `UUID` on purpose: a report
     link that got truncated in Telegram should land on the styled 404 page a
     human can act on, not FastAPI's raw JSON 422.
+
+    `?download=1` saves the page as a self-contained `.html` file. The CSS is
+    already inline and there are no subresources, so the saved file renders
+    offline exactly as it does here. Error and in-progress states are always
+    served inline — there is nothing worth saving in them.
     """
     try:
         parsed = UUID(evaluation_id)
@@ -1154,7 +1278,12 @@ async def get_html(evaluation_id: str, db: AsyncSession = Depends(get_db)):
 
     _cls, _glyph, label = _decision_style(parts.decision)
     title = f"{parts.project_name} — {label} · AIIC Committee Report"
-    return _html_response(title, _render_report_html(parts))
+    return _html_response(
+        title,
+        _render_report_html(parts, show_actions=not download),
+        extra_head=REPORT_HEAD_CSS,
+        extra_headers=_attachment_headers(parts, "html") if download else None,
+    )
 
 
 async def _list_report_rows(db: AsyncSession) -> list[dict]:

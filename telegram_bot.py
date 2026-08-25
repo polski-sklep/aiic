@@ -10,6 +10,8 @@ Formats:
 """
 import os
 import asyncio
+import io
+import re
 import uuid
 import logging
 import httpx
@@ -275,6 +277,116 @@ async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_evaluation(q.message, project)
 
 
+# Mirrors backend/app/api/reports.py::_filename_slug. Alphanumerics survive,
+# every other run collapses to a single "-", so no project name can produce a
+# path separator, a leading dot, or anything Telegram would reject.
+_FILENAME_KEEP_RE = re.compile(r"[^A-Za-z0-9]+")
+
+# Content-Disposition is written by our own backend, but a filename taken from
+# a header and handed to a file API gets validated anyway. Anything else falls
+# back to the locally computed name.
+_SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,90}$")
+
+
+def safe_filename(name, extension="md"):
+    slug = _FILENAME_KEEP_RE.sub("-", str(name or "")).strip("-").lower()[:60].strip("-")
+    return "aiic-%s.%s" % (slug or "report", extension)
+
+
+def extract_summary(data):
+    """Best available summary, mirroring api/evaluate.py::_extract_summary.
+
+    The Chair emits `reasoning` on most runs and `summary` on some, so reading
+    only `summary` printed "No summary available." under a real decision — the
+    text existed, the bot was looking in one place for it. Walk the same chain
+    the API walks: report writer's draft summary, then the Chair's summary,
+    then the Chair's reasoning.
+    """
+    results = data.get("agent_results") or {}
+    if not isinstance(results, dict):
+        results = {}
+
+    def output_of(agent):
+        entry = results.get(agent) or {}
+        out = entry.get("output") if isinstance(entry, dict) else None
+        return out if isinstance(out, dict) else {}
+
+    def first_text(source, *keys):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    # 1. draft_report.summary — the Report Writer's own one-paragraph summary.
+    draft = output_of("report_writer")
+    summary = first_text(draft, "summary")
+    if summary:
+        return summary
+
+    # 2/3. the Chair's summary, then its reasoning.
+    summary = first_text(output_of("committee_chair"), "summary", "reasoning")
+    if summary:
+        return summary
+
+    # 4. the top-level field, for callers that pass the raw pipeline result.
+    return first_text(data, "chair_reasoning") or "No summary available."
+
+
+def format_score(value):
+    """`68.2/100`, or an honest string when there is no score.
+
+    "Score: None/100" was printed under INSUFFICIENT_DATA decisions, which
+    reads as a scored zero-ish result rather than the absence of a score.
+    """
+    try:
+        return "%g/100" % float(value)
+    except (TypeError, ValueError):
+        return "n/a (insufficient data)"
+
+
+async def fetch_report_markdown(eval_id):
+    """Download the markdown report. Returns (bytes, filename) or (None, None).
+
+    Fetched over API_BASE — the in-container URL — not REPORT_BASE, so this
+    works regardless of whether the public address is reachable. That is the
+    point of attaching the file at all: REPORT_BASE is a Tailscale address and
+    the links in the message below are dead on a phone that is off the tailnet.
+    A document is not.
+    """
+    if not eval_id:
+        return None, None
+    url = "%s/api/reports/%s/markdown" % (API_BASE, eval_id)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(url, params={"download": "1"})
+        if r.status_code != 200:
+            logger.warning("Report fetch for %s returned %s", eval_id, r.status_code)
+            return None, None
+        body = r.content
+    except Exception as exc:
+        logger.warning("Report fetch for %s failed: %s", eval_id, exc)
+        return None, None
+
+    if not body:
+        logger.warning("Report for %s came back empty", eval_id)
+        return None, None
+
+    # Telegram's document limit is 50 MB; a report is ~30 KB. The guard is
+    # here so a runaway report fails as a skipped attachment, not a rejected
+    # API call that takes the whole result message down with it.
+    if len(body) > 45 * 1024 * 1024:
+        logger.warning("Report for %s is %d bytes — too large to attach", eval_id, len(body))
+        return None, None
+
+    filename = ""
+    disposition = r.headers.get("content-disposition", "")
+    match = re.search(r'filename="([^"\r\n]+)"', disposition)
+    if match and _SAFE_FILENAME_RE.match(match.group(1)):
+        filename = match.group(1)
+    return body, filename
+
+
 async def run_evaluation(message, project):
     name = project["project_name"]
     ticker = project["ticker"]
@@ -305,14 +417,13 @@ async def run_evaluation(message, project):
         return
 
     # Extract results
-    status = data.get("status", "unknown")
-    score = data.get("overall_score", "N/A")
     rec = data.get("recommendation", "N/A")
     eval_id = data.get("evaluation_id", "")
 
     chair = data.get("agent_results", {}).get("committee_chair", {}).get("output", {})
-    summary = chair.get("summary", "No summary available.")
-    reasoning = chair.get("reasoning", "")
+    if not isinstance(chair, dict):
+        chair = {}
+    summary = extract_summary(data)
 
     report_url = "%s/api/reports/%s/html" % (REPORT_BASE, eval_id)
     md_url = "%s/api/reports/%s/markdown" % (REPORT_BASE, eval_id)
@@ -320,20 +431,42 @@ async def run_evaluation(message, project):
     msg = (
         "EVALUATION COMPLETE: %s (%s)\n\n"
         "Decision: %s\n"
-        "Score: %s/100\n"
+        "Score: %s\n"
         "Conviction: %s\n\n"
         "%s\n\n"
         "Report: %s\n"
         "Markdown: %s"
     ) % (
         name, ticker,
-        rec, score,
+        rec, format_score(data.get("overall_score")),
         chair.get("conviction_level", "N/A"),
         summary[:500],
         report_url, md_url,
     )
 
     await update.message.reply_text(msg)
+
+    # The links above only resolve on the tailnet. Send the report itself too,
+    # so it is readable on a phone anywhere. A failed fetch must not lose the
+    # result message that already went out, so this is best-effort and every
+    # failure path just tells Jacob to use the links.
+    body, filename = await fetch_report_markdown(eval_id)
+    if not body:
+        await update.message.reply_text(
+            "Could not attach the report file — use the links above."
+        )
+        return
+    try:
+        await update.message.reply_document(
+            document=io.BytesIO(body),
+            filename=filename or safe_filename(name),
+            caption="%s (%s) — full committee report" % (name, ticker),
+        )
+    except Exception as exc:
+        logger.warning("Sending the report document failed: %s", exc)
+        await update.message.reply_text(
+            "Could not attach the report file (%s) — use the links above." % str(exc)[:120]
+        )
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):

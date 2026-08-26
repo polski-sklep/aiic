@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.calibration import router as calibration_router
+from app.api.consistency import router as consistency_router
 from app.api.evaluate import router as evaluate_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
@@ -98,6 +99,7 @@ app.include_router(projects_router)
 app.include_router(knowledge_router)
 app.include_router(memory_router)
 app.include_router(reports_router)
+app.include_router(consistency_router)
 
 
 @app.get("/health")

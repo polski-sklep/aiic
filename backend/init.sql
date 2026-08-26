@@ -179,3 +179,58 @@ CREATE INDEX idx_calibration_recommendation ON calibration_records(recommendatio
 CREATE INDEX idx_calibration_entry_captured_at ON calibration_records(entry_captured_at);
 CREATE INDEX idx_calibration_evaluation_id ON calibration_records(evaluation_id);
 CREATE INDEX idx_calibration_review_date ON calibration_records(review_date) WHERE review_date IS NOT NULL;
+
+-- Cross-report consistency audit ledger.
+-- Mirrored from backend/migrations/0004_consistency_findings.sql — that file is
+-- authoritative and carries the full rationale. This block is the fresh-volume
+-- fast path only (CONTRACTS §3.3).
+--
+-- Append-only: a finding is a chain of immutable revisions sharing a
+-- `fingerprint`, current state being the highest revision. Corrections
+-- supersede, they never edit — reports are the audit record (CONTRACTS §2.5)
+-- and so is this table.
+CREATE TABLE consistency_findings (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fingerprint        TEXT NOT NULL,
+    revision           INTEGER NOT NULL DEFAULT 1,
+    supersedes_id      UUID REFERENCES consistency_findings(id) ON DELETE SET NULL,
+    audit_run_id       UUID,
+    entity             TEXT NOT NULL,
+    metric             TEXT NOT NULL,
+    as_of_period       TEXT NOT NULL,
+    severity           TEXT NOT NULL DEFAULT 'medium',
+    status             TEXT NOT NULL DEFAULT 'open',
+    spread_pct         NUMERIC(10,2),
+    date_attribution   BOOLEAN NOT NULL DEFAULT FALSE,
+    claims             JSONB NOT NULL DEFAULT '[]',
+    verifications      JSONB NOT NULL DEFAULT '[]',
+    rationale          TEXT,
+    warning_text       TEXT,
+    first_observed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_checked_at    TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT consistency_findings_fingerprint_revision_key
+        UNIQUE (fingerprint, revision)
+);
+
+CREATE INDEX idx_consistency_findings_current
+    ON consistency_findings (fingerprint, revision DESC);
+CREATE INDEX idx_consistency_findings_status
+    ON consistency_findings (status, severity);
+CREATE INDEX idx_consistency_findings_entity
+    ON consistency_findings (entity, metric);
+
+CREATE TABLE consistency_audit_runs (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at      TIMESTAMPTZ,
+    status            TEXT NOT NULL DEFAULT 'running',
+    corpus_size       INTEGER NOT NULL DEFAULT 0,
+    claims_extracted  INTEGER NOT NULL DEFAULT 0,
+    conflicts_found   INTEGER NOT NULL DEFAULT 0,
+    findings_new      INTEGER NOT NULL DEFAULT 0,
+    error             TEXT
+);
+
+CREATE INDEX idx_consistency_audit_runs_started
+    ON consistency_audit_runs (started_at DESC);

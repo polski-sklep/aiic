@@ -1,12 +1,36 @@
-"""Data reconciliation - shared case context and numerical consistency checks."""
+"""Data reconciliation - shared case context and numerical consistency checks.
+
+Two checks live here, and they read different halves of an agent's output.
+
+* **Structured fields** — ``_extract_metrics`` walks the JSON and keeps numbers
+  whose leaf key names a metric. High confidence, very low yield: measured
+  against the live GMX evaluation it found **5 numbers across 15 agents**, four
+  of them from one agent, so no cross-agent comparison was ever possible and
+  ``reconcile_data`` reported CLEAN for every evaluation ever run.
+* **Prose** — the figures are in ``summary``, ``key_findings``, ``risks`` and
+  the Report Writer's 24 sections, as sentences. The same GMX evaluation yields
+  **67 comparable claims from 12 agents** once the prose is read.
+
+The prose extractor is NOT written here. ``knowledge/consistency.py`` already
+has one, with three precision rules earned against real false positives
+(adjacency rather than proximity for metric binding, nearest-preceding entity
+attribution with a drop on failure, periods as spans compared by containment).
+A second extractor with different rules would disagree with the first, which is
+the exact failure class both modules exist to catch. This module imports that
+one and re-keys its output; see ``_run_claims``.
+"""
 from __future__ import annotations
 
+import logging
 import math
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
 from app.utils.types import JSONObject
+
+logger = logging.getLogger(__name__)
 
 #: Leaf names that make a number worth reconciling, matched against the key with
 #: separators removed so "market_cap", "marketCap" and "marketcap" all hit.
@@ -153,6 +177,19 @@ def build_case_context(
     return {
         "case_time": now.isoformat(),
         "project_name": project_name,
+        # Other names this project is written under, for the within-run prose
+        # check. A claim whose entity does not resolve is dropped, and a
+        # first-time project is in no alias table, so without these the check is
+        # blind to the majority of a run's claims — the ones about the subject.
+        # Not rendered to any model: BaseAgent reads only `canonical_metrics`
+        # and `case_time` out of this dict, so this costs zero tokens.
+        "project_aliases": sorted(
+            {
+                str(resolved_info.get(key) or "").strip()
+                for key in ("ticker", "symbol", "coingecko_id", "defillama_slug")
+            }
+            - {""}
+        ),
         "canonical_metrics": metrics,
         "evaluation_date": now.strftime("%Y-%m-%d"),
         "data_snapshot_note": "Canonical baseline metrics as of evaluation_date. Flag discrepancies with external sources.",
@@ -181,8 +218,29 @@ async def fetch_canonical_defi_facts(
     )
 
 
-def reconcile_data(agent_outputs: dict[str, JSONObject], case_context: JSONObject) -> JSONObject:
-    """Flag numerical inconsistencies across agent outputs."""
+def reconcile_data(
+    agent_outputs: dict[str, JSONObject],
+    case_context: JSONObject,
+    scope: str = "run",
+) -> JSONObject:
+    """Flag numerical inconsistencies across the agent outputs of one run.
+
+    Two independent passes, both deterministic, both free of model calls:
+
+    * the **structured** pass over numeric JSON leaves (unchanged — see
+      ``_extract_metrics``), reported as ``inconsistencies``;
+    * the **prose** pass over the text fields, reported as ``contradictions``.
+
+    ``scope`` is a label for the caller's own bookkeeping — the orchestrator
+    runs this twice, once over the data layer and once over the whole run
+    including the Report Writer — and is echoed back in the result so a
+    persisted reconciliation says which pass produced it.
+
+    The prose pass is wrapped: it does strictly more work than this function
+    used to (regex extraction over every string in fifteen agent outputs), and
+    a reconciliation that can abort an evaluation is worse than no
+    reconciliation. Any failure degrades to the structured-only result.
+    """
     inconsistencies = []
     metrics_by_agent = {
         agent_name: extracted
@@ -217,12 +275,34 @@ def reconcile_data(agent_outputs: dict[str, JSONObject], case_context: JSONObjec
                         "divergence_pct": round(divergence * 100, 1),
                     })
 
+    try:
+        claims = _run_claims(agent_outputs, case_context)
+        contradictions = _detect_contradictions(claims)
+        claim_stats = {
+            "prose_claims_extracted": len(claims),
+            "prose_agents_with_claims": len({c.source_agent for c in claims}),
+        }
+    except Exception as exc:  # regex, import, malformed output — anything
+        logger.warning("Prose reconciliation unavailable (non-fatal): %s", exc)
+        contradictions = []
+        claim_stats = {"prose_claims_extracted": 0, "prose_agents_with_claims": 0}
+
+    parts = []
+    if inconsistencies:
+        parts.append("%d inconsistencies" % len(inconsistencies))
+    if contradictions:
+        parts.append("%d contradictions" % len(contradictions))
+
     return {
         "case_time": case_context.get("case_time"),
+        "scope": scope,
         "canonical_metrics": case_context.get("canonical_metrics", {}),
         "inconsistencies_found": len(inconsistencies),
         "inconsistencies": inconsistencies[:10],
-        "status": "CLEAN" if not inconsistencies else "WARNING: %d inconsistencies" % len(inconsistencies),
+        "contradictions_found": len(contradictions),
+        "contradictions": [c.to_json() for c in contradictions[:INTRA_RUN_MAX_FINDINGS]],
+        **claim_stats,
+        "status": "CLEAN" if not parts else "WARNING: " + ", ".join(parts),
     }
 
 
@@ -325,3 +405,449 @@ def _relative_divergence(a: float, b: float) -> float:
     if scale == 0:
         return 0.0
     return abs(a - b) / scale
+
+
+# ---------------------------------------------------------------------------
+# Within-run prose reconciliation
+# ---------------------------------------------------------------------------
+#
+# THE DEFECT, MEASURED
+#
+# Live GMX evaluation, 15 agents. `_extract_metrics` found 5 numbers in total,
+# four of them inside `tokenomics_analyst`. Nothing could be compared, so
+# `reconcile_data` returned `inconsistencies_found: 0` while the report it was
+# supposed to be guarding said both of these:
+#
+#     report_writer §5_on_chain_metrics   "...($3,341,200) purchased over 30 days"
+#     report_writer §7_competitive_landscape  "versus GMX's ~$2.8B 30-day volume"
+#
+# 838x apart, in one agent's own output, two sections apart, and neither number
+# is a structured field. The old check could not have seen either of them.
+#
+# WHY THIS RE-KEYS `evaluation_id` INSTEAD OF EXTENDING consistency.py
+#
+# `consistency.detect_conflicts` compares claims only across *different*
+# `evaluation_id`s, on purpose: intra-run drift is this module's job and
+# flagging it there would double-report it. Within one run the interesting axis
+# is not the evaluation, it is the *source* — which agent, and for the Report
+# Writer which section. Setting `evaluation_id` to "<agent>::<json path>" makes
+# the cross-report scoping rule express exactly the within-run one, with no
+# change to a module this branch does not own. Two figures from one section are
+# never compared (that is a sentence-level parse question, and
+# `_drop_comparatives` already handles it); two sections of one agent are.
+#
+# WHAT IS DELIBERATELY NOT REPORTED
+#
+# The cross-report audit's own catalogue of near-misses applies here too, and
+# within one evaluation there are more of them, because fifteen agents restate
+# the same handful of facts:
+#
+# * **The same quantity at different dates.** Handled upstream:
+#   `_resolve_period` gives an explicitly dated figure its own period, and
+#   `_periods_comparable` refuses to compare periods that do not contain one
+#   another. "44% in January 2026" and "70-80% now" never meet.
+# * **Different denominators.** "GMX volume" is perps, or spot, or both.
+#   Measured: `onchain_analyst` says $100-200M daily (protocol perp notional)
+#   and `risk_officer` says ~$3M daily (GMX-the-token across CEX/DEX venues).
+#   Both are true. That pair is 50x apart, which is why the bar below is not a
+#   percentage.
+# * **Overlapping hedged ranges.** `Claim.interval` widens a hedged figure by
+#   10% and a precise one by 2%, and only disjoint intervals are considered.
+# * **A figure and its component.** GMX TVL ~$300M total against $174.88M for
+#   V2 Perps alone, and ~$198M for the Arbitrum share. 2x, and not a defect.
+#
+# The date-attribution rule from the cross-report audit — the same value pinned
+# to two different periods — is deliberately NOT run within a run. Across runs
+# it is a strong signal. Within one run every undated figure inherits the same
+# inferred period (the run's own timestamp), so the rule fires whenever any
+# agent restates a dated figure without repeating its date. Measured on GMX it
+# produced three findings, all three of that shape, none of them defects.
+
+#: How far apart two figures for one metric must be before a within-run
+#: disagreement is reported.
+#:
+#: NOT A TOLERANCE — A SCOPE ALLOWANCE, AND IT IS CALIBRATED, NOT CHOSEN.
+#:
+#: The question this number answers is "could these two figures be two
+#: different quantities that share a name?", not "how much error is
+#: acceptable". Measured over five real evaluations (GMX, Hyperliquid x2,
+#: Aave, Chainlink; 137 extracted claims):
+#:
+#:     largest gap a legitimate scope difference produced      50x
+#:       (GMX token spot volume ~$3M/day vs GMX protocol perp volume ~$150M/day)
+#:     smallest gap of a genuine within-run contradiction     838x
+#:       (the buyback figure above, read as a 30-day volume)
+#:
+#: 100x sits between them with an order of magnitude of margin on each side.
+#: The cost is explicit: a real 4x disagreement is not reported. That is the
+#: intended trade. A within-run check that fires on every evaluation is ignored
+#: within a week and then costs tokens forever without changing a decision.
+INTRA_RUN_MIN_RATIO = 100.0
+
+#: At most this many findings reach a prompt. Worst-first.
+INTRA_RUN_MAX_FINDINGS = 3
+
+#: Hard ceiling on the rendered block, mirroring consistency.WARNING_CHAR_BUDGET.
+#: Paid once per evaluation on one Opus call, and only when something is found.
+INTRA_RUN_RENDER_BUDGET = 1400
+
+#: Strings shorter than this carry no extractable claim and cost time to scan.
+_MIN_PROSE_CHARS = 20
+
+#: A metric phrase *preceding* its value may not be reached across one of
+#: these. See `_binding_is_sound`.
+_BACKWARD_CLAUSE_BREAK = re.compile(r"[,;]|[—–]|\s-\s")
+
+
+class _RunClaim:
+    """One extracted claim plus the agent and JSON path it came from.
+
+    A thin wrapper rather than a subclass: ``consistency.Claim`` is a frozen
+    dataclass in a module this branch does not own, and the two extra fields
+    are bookkeeping for rendering, not part of the claim.
+    """
+
+    __slots__ = ("claim", "source_agent", "source_path")
+
+    def __init__(self, claim: Any, source_agent: str, source_path: str) -> None:
+        self.claim = claim
+        self.source_agent = source_agent
+        self.source_path = source_path
+
+    @property
+    def source(self) -> str:
+        return f"{self.source_agent} {self.source_path}"
+
+    @property
+    def mid(self) -> float:
+        return (self.claim.lo + self.claim.hi) / 2.0
+
+
+class _Contradiction:
+    """Two or more figures for one (entity, metric, period) that cannot all hold."""
+
+    def __init__(self, entity: str, metric: str, label: str, unit: str,
+                 members: list[_RunClaim]) -> None:
+        self.entity = entity
+        self.metric = metric
+        self.label = label
+        self.unit = unit
+        self.members = sorted(members, key=lambda m: m.mid)
+
+    @property
+    def ratio(self) -> float:
+        lo, hi = self.members[0].mid, self.members[-1].mid
+        return hi / lo if lo > 0 else float("inf")
+
+    @property
+    def period(self) -> str:
+        return self.members[0].claim.period
+
+    @property
+    def outlier(self) -> _RunClaim:
+        """The single figure the others disagree with.
+
+        The majority is the cluster of members within a factor of
+        ``INTRA_RUN_MIN_RATIO`` of the median; the outlier is the member
+        furthest from it. Naming it is what turns "these disagree" into
+        something a reader can act on — in the GMX case it points at
+        ``report_writer §5``, which is where the wrong number was written.
+        """
+        mids = sorted(m.mid for m in self.members)
+        median = mids[len(mids) // 2]
+        return max(
+            self.members,
+            key=lambda m: max(m.mid / median, median / m.mid) if m.mid and median else 0.0,
+        )
+
+    @property
+    def agrees(self) -> list[_RunClaim]:
+        out = self.outlier
+        return [m for m in self.members if m is not out]
+
+    def to_json(self) -> JSONObject:
+        return {
+            "entity": self.entity,
+            "metric": self.metric,
+            "label": self.label,
+            "unit": self.unit,
+            "period": self.period,
+            "ratio": round(self.ratio, 1),
+            "outlier": {
+                "value": self.outlier.claim.raw,
+                "source": self.outlier.source,
+                "quote": self.outlier.claim.quote[:240],
+            },
+            "claims": [
+                {
+                    "value": m.claim.raw,
+                    "lo": m.claim.lo,
+                    "hi": m.claim.hi,
+                    "source": m.source,
+                    "quote": m.claim.quote[:240],
+                }
+                for m in self.members
+            ],
+        }
+
+
+def _prose_leaves(output: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
+    """Every string leaf in an agent output, with its JSON path.
+
+    Reuses ``_flatten`` so the traversal rules — including QA-022's descent
+    into lists — are shared with the structured pass rather than duplicated.
+    """
+    for path, value in _flatten(output):
+        if isinstance(value, str) and len(value) >= _MIN_PROSE_CHARS:
+            yield path, value
+
+
+def _run_aliases(case_context: Mapping[str, Any]) -> dict[str, str]:
+    """The cross-report alias map, plus this project's own names.
+
+    ``consistency.SEED_ENTITY_ALIASES`` covers the third parties the committee
+    writes about, but the project currently under evaluation may never have been
+    seen before, and a claim whose entity does not resolve is dropped. Adding
+    the subject's own names is what makes claims *about the subject* — the
+    majority of a run's claims — visible at all.
+
+    Aliases shorter than three characters are refused. ``_entity_mentions``
+    matches a non-ambiguous alias case-insensitively, and a two-letter token
+    matches English.
+    """
+    from app.knowledge.consistency import _build_alias_map
+
+    project = str(case_context.get("project_name") or "").strip()
+    extra: list[tuple[str, str]] = []
+    if project:
+        for alias in [project, *case_context.get("project_aliases", [])]:
+            text = str(alias or "").strip()
+            if len(text) >= 3:
+                extra.append((text, project))
+    return _build_alias_map(extra)
+
+
+def _run_claims(
+    agent_outputs: Mapping[str, Any], case_context: Mapping[str, Any]
+) -> list[_RunClaim]:
+    """Every comparable claim in one run's prose, keyed by agent and path."""
+    from app.knowledge.consistency import extract_claims
+
+    aliases = _run_aliases(case_context)
+    project = str(case_context.get("project_name") or "unknown")
+    report_date = _case_datetime(case_context)
+
+    out: list[_RunClaim] = []
+    for agent_name, output in sorted(agent_outputs.items()):
+        if not isinstance(output, Mapping):
+            continue
+        for path, text in _prose_leaves(output):
+            for claim in extract_claims(
+                text,
+                # See the module note above: the source, not the evaluation, is
+                # the axis a within-run check compares across.
+                evaluation_id=f"{agent_name}::{path}",
+                report_project=project,
+                section=f"{agent_name} {path}",
+                report_date=report_date,
+                aliases=aliases,
+            ):
+                if _binding_is_sound(claim):
+                    out.append(_RunClaim(claim, agent_name, path))
+    return out
+
+
+def _case_datetime(case_context: Mapping[str, Any]) -> datetime:
+    """The run's own timestamp, for the undated-claim fallback period."""
+    raw = str(case_context.get("case_time") or "")
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return datetime.now(timezone.utc)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _binding_is_sound(claim: Any) -> bool:
+    """Reject a claim whose metric label only reaches it across a clause break.
+
+    ``consistency._classify_metric`` binds a metric phrase to a value by
+    adjacency in either direction: within 30 characters, with no digit in the
+    gap. Forward is safe — English writes "$6.66B TVL", "GMX's ~$2.8B 30-day
+    volume", "market cap ($75M)". Backward across a comma or a dash is not:
+
+        "GMX is in a daily uptrend, trading at $7.20 — above all three EMAs"
+
+    "daily" labels the *uptrend*. The extractor read $7.20 as GMX's 24-hour
+    volume and put a share price in a bucket with $100-200M, a 20,833,333x
+    "contradiction" that no threshold can filter and that would have been the
+    loudest finding in the GMX evaluation.
+
+    This is the same reasoning ``consistency._CLAUSE_BREAK`` already applies to
+    date qualifiers ("a parenthetical date must not lend itself to its
+    neighbours"), applied to metric labels, and applied in one direction only.
+    Parentheses are deliberately NOT breaks here: "market cap ($75M)" and
+    "DeFiLlama TVL: GMX (~$300M)" are the ordinary way this corpus writes a
+    figure, and treating "(" as a break costs five true claims per evaluation
+    to remove one false one.
+
+    Implemented as a post-filter rather than a change to ``_classify_metric``
+    because that function belongs to the cross-report audit, whose corpus and
+    recall trade-offs are not this one's. It re-derives the binding from
+    ``claim.quote``; a claim whose label cannot be re-derived at all is kept,
+    because that is the signature of the continuation rule ("up from 36.4% in
+    January 2026"), where the metric is stated once several clauses earlier.
+    """
+    from app.knowledge.consistency import (
+        _ANY_NUMBER,
+        _METRIC_RES,
+        _METRIC_WINDOW,
+    )
+
+    quote, raw = claim.quote, claim.raw
+    start = quote.find(raw)
+    if start < 0:
+        return True
+    end = start + len(raw)
+
+    saw_candidate = False
+    for key, unit, regex in _METRIC_RES:
+        if key != claim.metric or unit != claim.unit:
+            continue
+        for match in regex.finditer(quote):
+            if match.start() < end and match.end() > start:
+                return True  # the value sits inside the metric phrase
+            if match.end() <= start:
+                gap = quote[match.end():start]
+                if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
+                    continue
+                saw_candidate = True
+                if not _BACKWARD_CLAUSE_BREAK.search(gap):
+                    return True
+            else:
+                gap = quote[end:match.start()]
+                if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
+                    continue
+                return True
+    return not saw_candidate
+
+
+def _detect_contradictions(claims: Sequence[_RunClaim]) -> list[_Contradiction]:
+    """Group by (entity, metric) and return the buckets that cannot all hold.
+
+    Two members conflict when they come from different sources, their periods
+    are comparable, their hedged intervals are disjoint, and they are at least
+    ``INTRA_RUN_MIN_RATIO`` apart. Conflicting pairs are clustered transitively
+    so one metric produces one finding rather than one per pair.
+
+    ``_disjoint`` and ``_periods_comparable`` are the cross-report audit's own
+    predicates, imported rather than restated: a within-run check that decided
+    "overlapping" or "same period" differently from the cross-run one would
+    manufacture disagreements between the two audits.
+    """
+    from app.knowledge.consistency import (
+        CANONICAL_METRICS,
+        _disjoint,
+        _periods_comparable,
+    )
+
+    buckets: dict[tuple[str, str], list[_RunClaim]] = {}
+    for item in claims:
+        buckets.setdefault((item.claim.entity, item.claim.metric), []).append(item)
+
+    findings: list[_Contradiction] = []
+    for (entity, metric), group in sorted(buckets.items()):
+        clusters: list[list[_RunClaim]] = []
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if a.claim.evaluation_id == b.claim.evaluation_id:
+                    continue
+                if not _periods_comparable(a.claim.period, b.claim.period):
+                    continue
+                if not _disjoint(a.claim, b.claim):
+                    continue
+                if _ratio(a.mid, b.mid) < INTRA_RUN_MIN_RATIO:
+                    continue
+                joined = [c for c in clusters if a in c or b in c]
+                if joined:
+                    target = joined[0]
+                    for other in joined[1:]:
+                        target.extend(x for x in other if x not in target)
+                        clusters.remove(other)
+                    for x in (a, b):
+                        if x not in target:
+                            target.append(x)
+                else:
+                    clusters.append([a, b])
+
+        for cluster in clusters:
+            findings.append(
+                _Contradiction(
+                    entity=entity,
+                    metric=metric,
+                    label=str(CANONICAL_METRICS.get(metric, {}).get("label", metric)),
+                    unit=cluster[0].claim.unit,
+                    members=cluster,
+                )
+            )
+
+    return sorted(findings, key=lambda f: -f.ratio)
+
+
+def _ratio(a: float, b: float) -> float:
+    lo, hi = sorted((a, b))
+    return hi / lo if lo > 0 else float("inf")
+
+
+def render_contradictions(
+    reconciliation: Mapping[str, Any], budget: int = INTRA_RUN_RENDER_BUDGET
+) -> str:
+    """The within-run findings as an adjudicator should read them.
+
+    Returns "" when there is nothing to say, so the caller can splice it in
+    unconditionally and a clean evaluation pays exactly zero tokens — which is
+    most evaluations. Bounded, worst-first, and it names the source of the
+    figure that disagrees rather than only asserting that a disagreement exists:
+    "report_writer 5_on_chain_metrics says X" is actionable, "the committee
+    disagrees with itself" is not.
+    """
+    findings = list(reconciliation.get("contradictions") or [])
+    if not findings:
+        return ""
+
+    header = (
+        "=== CONTRADICTIONS INSIDE THIS EVALUATION ===\n"
+        "A deterministic check found figures in this run's own output that cannot "
+        "all be true. This is arithmetic on the text, not a judgement about which "
+        "figure is right. Resolve each one before relying on either side of it, "
+        "and do not build a signpost or a trigger on a figure listed here.\n"
+    )
+    blocks: list[str] = []
+    used = len(header)
+    for finding in findings[:INTRA_RUN_MAX_FINDINGS]:
+        block = _render_one(finding)
+        if used + len(block) + 1 > budget:
+            break
+        blocks.append(block)
+        used += len(block) + 1
+    if not blocks:
+        return ""
+    return header + "\n".join(blocks)
+
+
+def _render_one(finding: Mapping[str, Any]) -> str:
+    outlier = finding.get("outlier") or {}
+    lines = [
+        "- {entity} — {label} ({period}): the figures are {ratio}x apart.".format(
+            entity=finding.get("entity", "?"),
+            label=finding.get("label", finding.get("metric", "?")),
+            period=finding.get("period", "?"),
+            ratio=finding.get("ratio", "?"),
+        )
+    ]
+    for claim in finding.get("claims") or []:
+        marker = "  <-- odd one out" if claim.get("source") == outlier.get("source") else ""
+        lines.append(f"    {claim.get('value', '?')}  [{claim.get('source', '?')}]{marker}")
+    quote = str(outlier.get("quote") or "").strip()
+    if quote:
+        lines.append(f'    the odd one out, in context: "{quote[:200]}"')
+    return "\n".join(lines)

@@ -34,6 +34,7 @@ from app.agents.reconciliation import (
     build_case_context,
     fetch_canonical_defi_facts,
     reconcile_data,
+    render_contradictions,
 )
 from app.agents.report_writer import ReportWriter
 from app.agents.risk_officer import RiskOfficer
@@ -487,6 +488,43 @@ def _coerce_count(value: object) -> int:
     return 0
 
 
+def _reconcile(
+    outputs: dict[str, JSONObject], case_context: JSONObject, scope: str
+) -> JSONObject:
+    """Run one reconciliation pass. Cannot fail an evaluation.
+
+    The original call was unwrapped, which was defensible when `reconcile_data`
+    only walked numeric JSON leaves. It now runs a regex extractor over every
+    string in every agent's output, and the work is a guard: nothing downstream
+    needs it to have succeeded. An evaluation that dies because its consistency
+    check tripped has lost fifteen agents' worth of paid model calls to a
+    warning system.
+
+    `reconcile_data` already contains the prose pass in its own try/except and
+    degrades to the structured result. This is the outer belt for the rest —
+    a malformed `case_context`, an import failure, anything.
+    """
+    try:
+        result = reconcile_data(outputs, case_context, scope)
+    except Exception as exc:
+        logger.warning("Reconciliation pass %r failed (non-fatal): %s", scope, exc)
+        return {
+            "scope": scope,
+            "status": "UNAVAILABLE: %s" % exc,
+            "inconsistencies_found": 0,
+            "inconsistencies": [],
+            "contradictions_found": 0,
+            "contradictions": [],
+        }
+    if result.get("inconsistencies_found", 0) > 0:
+        logger.warning(
+            "Reconciliation (%s): %d structured inconsistencies",
+            scope,
+            result["inconsistencies_found"],
+        )
+    return result
+
+
 class Orchestrator:
     """9-step committee evaluation pipeline with 15 agents."""
 
@@ -672,10 +710,8 @@ class Orchestrator:
 
         if on_status:
             await on_status("step", "data_reconciliation", {})
-        reconciliation = reconcile_data(prior, case_context)
+        reconciliation = _reconcile(prior, case_context, "data_layer")
         context["reconciliation"] = reconciliation
-        if reconciliation.get("inconsistencies_found", 0) > 0:
-            logger.warning("Data reconciliation: %d inconsistencies", reconciliation["inconsistencies_found"])
 
         if on_status:
             await on_status("step", "4_maturation_scoring", {})
@@ -730,6 +766,63 @@ class Orchestrator:
                 ),
                 "footnotes": [],
             }
+
+        # RECONCILIATION, SECOND PASS — the whole run, including the report.
+        #
+        # The first pass runs against `prior`: the eight data agents, before
+        # synthesis and before the Report Writer exists. So the one agent that
+        # assembles every other agent's figures into a single document — and
+        # therefore the one agent that can contradict *itself* — was the only
+        # agent nothing checked. The defect this fixes is exactly that shape:
+        # the GMX report gave GMX's 30-day volume as $3,341,200 in
+        # §5_on_chain_metrics and as ~$2.8B in §7_competitive_landscape, 838x
+        # apart, both written by report_writer.
+        #
+        # WHY HERE AND NOT LATER. Two agents still run after this point, and
+        # both of them are adjudicators — Ray reviews the report, the Chair
+        # decides on it. A contradiction found after the Chair has spoken is an
+        # observation about a decision already made. Found here, it is an input
+        # to that decision. Later would also be cheaper and useless, which is
+        # what the first pass already was.
+        #
+        # WHY NOT INSTEAD OF THE FIRST PASS. The first pass is what the eight
+        # data agents' figures are checked against each other in, it costs no
+        # tokens, and its result is on the wire (`data_reconciliation`) for the
+        # status stream. Keeping both means a disagreement introduced by the
+        # data layer and one introduced by synthesis are distinguishable.
+        run_reconciliation = _reconcile(
+            {**prior, self.report_writer.name: draft_report}, case_context, "full_run"
+        )
+        context["reconciliation"] = run_reconciliation
+        reconciliation = run_reconciliation
+
+        # Where the finding goes, and why it goes there.
+        #
+        # `case_context` carries the *cross-report* contradictions to every data
+        # agent, and BaseAgent renders it. That channel is unavailable here:
+        # both remaining agents override `get_system_prompt` and neither reads
+        # `case_context`, and in any case they run after it was assembled.
+        #
+        # `chair.format_report_for_chair` renders every non-`sections` key of
+        # the report as labelled prompt text under REPORT METADATA, so attaching
+        # the block to the report puts it in front of the adjudicator with no
+        # change to a file this branch does not own. It is also persisted with
+        # the report, which is where an audit record of "the committee
+        # contradicted itself and was told so" belongs. No renderer reads it:
+        # api/reports.py addresses sections by name.
+        #
+        # Empty string when the run is clean, and the key is then absent
+        # entirely — a clean evaluation pays nothing and looks exactly as it did
+        # before.
+        contradiction_text = render_contradictions(run_reconciliation)
+        if contradiction_text:
+            draft_report["data_contradictions"] = contradiction_text
+            logger.warning(
+                "Within-run contradictions in %s: %d found, %d chars surfaced to the Chair",
+                project_name,
+                run_reconciliation.get("contradictions_found", 0),
+                len(contradiction_text),
+            )
 
         if on_status:
             await on_status("step", "post_ray_dalio", {})

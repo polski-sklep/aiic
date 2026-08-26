@@ -2,7 +2,18 @@ import uuid
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.database import Base
@@ -168,3 +179,69 @@ class CalibrationRecord(Base):
     signposts = Column(JSONB)
     review_date = Column(Date)
     created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class ConsistencyFinding(Base):
+    """One revision of a cross-report contradiction.
+
+    Added by backend/migrations/0004_consistency_findings.sql. Append-only: a
+    finding is a chain of immutable revisions sharing ``fingerprint``, and the
+    current state is the highest revision. A re-check appends; a correction
+    appends with ``supersedes_id`` set. Nothing updates or deletes — reports are
+    the audit record (CONTRACTS §2.5) and so is this ledger.
+
+    ``entity`` is the entity the claims are ABOUT, not the project the report
+    was written for. That distinction is the whole point: the GMX report's
+    claims about Hyperliquid are invisible to anything keyed on the report's own
+    project.
+    """
+
+    __tablename__ = "consistency_findings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    fingerprint = Column(Text, nullable=False)
+    revision = Column(Integer, nullable=False, default=1)
+    supersedes_id = Column(
+        UUID(as_uuid=True), ForeignKey("consistency_findings.id", ondelete="SET NULL")
+    )
+    audit_run_id = Column(UUID(as_uuid=True))
+    entity = Column(Text, nullable=False)
+    metric = Column(Text, nullable=False)
+    as_of_period = Column(Text, nullable=False)
+    severity = Column(Text, nullable=False, default="medium")
+    status = Column(Text, nullable=False, default="open")
+    spread_pct = Column(Numeric(10, 2))
+    date_attribution = Column(Boolean, nullable=False, default=False)
+    claims = Column(JSONB, nullable=False, default=list)
+    verifications = Column(JSONB, nullable=False, default=list)
+    rationale = Column(Text)
+    warning_text = Column(Text)
+    first_observed_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_checked_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "fingerprint", "revision", name="consistency_findings_fingerprint_revision_key"
+        ),
+    )
+
+
+class ConsistencyAuditRun(Base):
+    """Bookkeeping for the "every 10 reports or monthly" trigger.
+
+    ``corpus_size`` is the count the "every 10 reports" rule counts against, so
+    the due check is a single query and needs no scheduler state.
+    """
+
+    __tablename__ = "consistency_audit_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at = Column(DateTime(timezone=True))
+    status = Column(Text, nullable=False, default="running")
+    corpus_size = Column(Integer, nullable=False, default=0)
+    claims_extracted = Column(Integer, nullable=False, default=0)
+    conflicts_found = Column(Integer, nullable=False, default=0)
+    findings_new = Column(Integer, nullable=False, default=0)
+    error = Column(Text)

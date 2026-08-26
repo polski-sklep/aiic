@@ -69,7 +69,31 @@ async def lifespan(app: FastAPI):
     for problem in validate_agent_tool_names():
         logger.error("Tool wiring: %s", problem)
 
+    # Start the periodic driver for the cross-report consistency sweep.
+    #
+    # The sweep, its policy ("every 10 reports or every 30 days", in
+    # `audit_is_due`) and its HTTP surface were all built and deployed, and it
+    # had never run once: no crontab entry, no systemd timer, no orchestrator
+    # call, no bot command. `consistency_findings` was empty because nothing had
+    # ever looked. The alternative — a systemd timer on the VPS — is a host
+    # mutation outside `git pull --ff-only` (CONTRACTS §4.7) and invisible to
+    # both CI and a checkout; the full argument is in the module docstring.
+    #
+    # `start()` never raises and never blocks: it creates a background task and
+    # returns, so a scheduler that cannot start cannot stop the API from
+    # serving, and the loop it starts is bounded, guarded and cancelled below.
+    # It deliberately does NOT sweep on boot — see `Startup behaviour` in
+    # app/knowledge/consistency_schedule.py.
+    from app.knowledge import consistency_schedule
+
+    consistency_schedule.start()
+
     yield
+
+    # Cancel the loop before the event loop goes away, so a sweep in flight is
+    # not abandoned mid-await with a warning at shutdown. Bounded and
+    # non-raising, for the same reason the startup half is.
+    await consistency_schedule.stop()
 
     logger.info("Committee Orchestrator shutting down")
 

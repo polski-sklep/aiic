@@ -1993,24 +1993,31 @@ async def render_active_warnings(char_budget: int = WARNING_CHAR_BUDGET) -> str:
 # The point of the choice is where the *policy* lives. ``audit_is_due`` below
 # holds "every 10 reports or monthly" in Python, next to the data it counts, and
 # is testable without a scheduler. The scheduler therefore does not need to know
-# the policy: it calls the endpoint on any convenient interval and the endpoint
-# decides. A systemd timer matching the existing ``committee-bot.service``
-# pattern is the intended driver:
+# the policy: it asks on any convenient interval and this function decides. That
+# still holds and nothing about it changed.
 #
-#     # /etc/systemd/system/committee-consistency-audit.timer
-#     [Timer]
-#     OnCalendar=daily
-#     Persistent=true
+# WHERE the heartbeat lives did change, and this comment is updated rather than
+# left to rot into a seventh documented-vs-actual divergence. This note used to
+# name a systemd timer on the VPS as the intended driver. **Nobody ever
+# installed it** — no crontab entry, no timer, no bot command — so the sweep had
+# never executed once in production and ``consistency_findings`` was empty
+# because nothing had looked. The driver is now in-process:
 #
-#     # /etc/systemd/system/committee-consistency-audit.service
-#     [Service]
-#     Type=oneshot
-#     ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8100/api/consistency/audit
+#     app/knowledge/consistency_schedule.py   the guarded loop
+#     app/main.py                             lifespan starts and stops it
+#     GET  /api/consistency/schedule          is it alive, what has it done
+#     POST /api/consistency/schedule/tick     one tick by hand
 #
-# ``Persistent=true`` matters: a VPS reboot across the due date still runs the
-# sweep on next boot instead of skipping the month. And because the due check is
-# cheap and the sweep is idempotent, an over-eager timer is harmless — which is
-# what makes the heartbeat allowed to be dumb.
+# It ships with `git pull --ff-only` + `up -d --build` (CONTRACTS §4.7, D14),
+# which a unit file in /etc/systemd/system does not. The full argument, and the
+# reasons the startup-check option this note originally rejected is still
+# rejected, are in that module's docstring.
+#
+# An external timer against ``POST /api/consistency/audit`` remains workable as
+# a second driver, and is safe to add: the scheduler takes a Postgres advisory
+# lock, so the two serialise instead of racing. ``Persistent=true`` would still
+# matter for it — a VPS reboot across the due date should run the sweep on next
+# boot rather than skip the month.
 
 
 async def audit_is_due() -> dict[str, Any]:

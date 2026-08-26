@@ -1571,14 +1571,45 @@ def _fmt(unit: str, lo: float, hi: float, raw: str) -> str:
 
 
 def _render_one(conflict: Conflict, status: str, rationale: str) -> str:
+    """One finding, compact.
+
+    Collapsed by distinct value rather than listed per section: the GMX report
+    asserts 70-80%+ in four different sections, and four near-identical lines
+    spend the render budget without telling an agent anything the first line did
+    not. What an agent needs is the disagreeing values, who says which, and what
+    to do about it.
+    """
     label = CANONICAL_METRICS.get(conflict.metric, {}).get("label", conflict.metric)
-    lines = [f"- {conflict.entity} — {label} ({conflict.period}) [{status}]"]
+
+    by_value: dict[str, set[str]] = {}
     for c in conflict.claims:
-        lines.append(
-            f"    {c.report_project} report, {c.section}: {_fmt(c.unit, c.lo, c.hi, c.raw)}"
+        by_value.setdefault(_fmt(c.unit, c.lo, c.hi, c.raw), set()).add(c.report_project)
+
+    if conflict.date_attribution:
+        by_period: dict[str, set[str]] = {}
+        for c in conflict.claims:
+            by_period.setdefault(c.period, set()).add(c.report_project)
+        value = next(iter(by_value))
+        sides = "; ".join(
+            f"{period} per {'/'.join(sorted(who))}" for period, who in sorted(by_period.items())
         )
-    if rationale:
-        lines.append(f"    -> {rationale}")
+        head = f"- {conflict.entity} — {label}: same figure, different dates [{status}]"
+        detail = f"    {value} is dated {sides}."
+        advice = (
+            "    -> At most one dating is right. Do not reuse this figure without "
+            "re-deriving its as-of date."
+        )
+    else:
+        sides = " vs ".join(
+            f"{value} ({'/'.join(sorted(who))})" for value, who in sorted(by_value.items())
+        )
+        head = f"- {conflict.entity} — {label}, {conflict.period} [{status}, {conflict.severity}]"
+        detail = f"    {sides}"
+        advice = "    -> Re-derive from a primary source before relying on either."
+
+    lines = [head, detail, advice]
+    if status in ("confirmed_error", "transient") and rationale:
+        lines.append(f"    -> {rationale[:240]}")
     return "\n".join(lines)
 
 
@@ -1695,14 +1726,14 @@ async def audit_is_due() -> dict[str, Any]:
                 )
             )
         ).mappings().first()
+        # Must count exactly the corpus the sweep will read, not every
+        # report_writer row. Five of the sixteen have `sections` NULL — a
+        # report_writer failure, so there is no prose to audit — and counting
+        # them made the due check report five phantom new reports the moment a
+        # sweep finished, which would have driven the trigger permanently hot.
         corpus_size = int(
             (
-                await session.execute(
-                    sql_text(
-                        "SELECT COUNT(DISTINCT evaluation_id) AS n FROM agent_outputs "
-                        "WHERE agent_name = 'report_writer'"
-                    )
-                )
+                await session.execute(sql_text(f"SELECT COUNT(*) FROM ({_CORPUS_SQL}) c"))
             ).scalar_one()
         )
 

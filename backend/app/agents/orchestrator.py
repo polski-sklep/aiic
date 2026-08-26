@@ -790,8 +790,25 @@ class Orchestrator:
         # itself, or did synthesis introduce it? Both results are persisted
         # (`data_reconciliation` and `data_reconciliation_data_layer`), so that
         # question is answerable from the record rather than from a log line.
+        # The Technical Analyst is excluded from this pass, and only from this
+        # pass. CONTRACTS §4.1: it is in `exclude_from_scores` and reaches the
+        # Chair *only* as `technical_entry_context`; a contradiction block that
+        # named it as a source would be a second channel from that agent into
+        # the adjudication, which is the thing §4.1 forbids. It is still
+        # reconciled in the data-layer pass, which reaches no prompt.
+        #
+        # Measured cost of the exclusion on the GMX run: zero. Its one
+        # extractable figure was "trading at $7.20", which `_binding_is_sound`
+        # already refuses as a share price mislabelled a daily volume.
+        chair_visible = {
+            name: output
+            for name, output in prior.items()
+            if name != TechnicalAnalyst.name
+        }
         run_reconciliation = _reconcile(
-            {**prior, self.report_writer.name: draft_report}, case_context, "full_run"
+            {**chair_visible, self.report_writer.name: draft_report},
+            case_context,
+            "full_run",
         )
         context["reconciliation"] = run_reconciliation
         # `data_reconciliation` keeps its name and now carries the superset —

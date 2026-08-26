@@ -976,18 +976,26 @@ def detect_conflicts(claims: Sequence[Claim]) -> list[Conflict]:
                 for b in same_value[i + 1:]
             ):
                 continue
+            # `period_set` — this finding's OWN periods. Never the value-conflict
+            # loop's `periods`: that name is bound only when a value conflict was
+            # emitted, so reading it here raised UnboundLocalError on a corpus
+            # whose only finding is a date attribution, and silently reported the
+            # previous bucket's period when one had been emitted. `period` feeds
+            # `fingerprint_of`, so the leak also gave the finding an identity
+            # derived from an unrelated bucket.
+            date_periods = sorted(period_set)
             conflicts.append(
                 Conflict(
                     entity=entity,
                     metric=metric,
-                    period=" vs ".join(sorted(periods)),
+                    period=" vs ".join(date_periods),
                     unit=same_value[0].unit,
                     claims=same_value,
                     spread_pct=0.0,
                     date_attribution=True,
                     note=(
                         f"The same figure ({same_value[0].raw}) is dated to "
-                        f"{' and '.join(sorted(periods))} by different evaluations. "
+                        f"{' and '.join(date_periods)} by different evaluations. "
                         "At most one dating can be right; a signpost built on "
                         "either cannot fire correctly."
                     ),

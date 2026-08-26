@@ -156,182 +156,342 @@ class CaseContextTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Within-run prose reconciliation
 # ---------------------------------------------------------------------------
+#
+# THE FIRST VERSION OF THIS SUITE ASSERTED A CONTRADICTION THAT DOES NOT EXIST.
+#
+# It was built on the GMX report's "Buybacks: 103,764 GMX ($3,341,200) purchased
+# over 30 days" being a 30-day trading volume in conflict with the same report's
+# ~$2.8B. It is a buyback. $3.34M of buybacks and $2.8B of volume disagree about
+# nothing, and every test that asserted the catch was asserting an extraction
+# defect. The defect is fixed in `_binding_is_sound` and pinned below in
+# MisbindingRegressionTest, which now asserts the opposite of what those tests
+# asserted.
+#
+# Fixtures below are verbatim corpus text. The acceptance case is Aave
+# evaluation c1479a94 (2026-04-11), where three agents put Aave's TVL at $25.7B
+# "across 20+ chains" and three others put it at $61.9B "across 20+ chains".
 
-#: Verbatim from the live GMX evaluation 8e4b3c83 (2026-08-25). The report
-#: writer put GMX's 30-day volume at $3,341,200 in one section and ~$2.8B two
-#: sections later, and the structured check saw neither number because neither
-#: is a structured field. Trimmed to the sentences that carry the figures;
-#: nothing is reworded.
-GMX_SECTION_5 = (
-    "TVL is ~$300M total as of mid-2026, with Arbitrum ~$198M (94.2% concentration), "
-    "staking ~$45M and Avalanche ~$11M. "
-    "24h volume ~$2.9M against $75M MCap = ~3.9% daily volume/MCap — low liquidity. "
-    "Daily trading volume runs ~$100-200M (perp.wiki). "
-    "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days."
-)
-GMX_SECTION_7 = (
-    "Hyperliquid commands 70-80%+ of on-chain perp volume (44% as of Jan 2026 "
-    "rising through mid-2026) with ~$6.66B TVL and processes ~$30B+ daily / "
-    "~$245B over 30 days, versus GMX's ~$2.8B 30-day volume — an ~87x volume gap."
-)
+AAVE_CTX = {
+    "case_time": "2026-04-11T17:52:22+00:00",
+    "project_name": "Aave",
+    "project_aliases": ["AAVE", "aave"],
+    "canonical_metrics": {},
+}
 GMX_CTX = {
     "case_time": "2026-08-25T18:24:43+00:00",
     "project_name": "GMX",
     "project_aliases": ["gmx"],
     "canonical_metrics": {},
 }
-GMX_RUN = {
+
+#: Verbatim from evaluation c1479a94. Six agents, two irreconcilable values, the
+#: same "across 20+ chains" qualifier on both.
+AAVE_RUN = {
     "competitive_intel": {
-        "key_findings": ["GMX's 30-day volume is approximately $2.8B vs. Hyperliquid's ~$245B."]
+        "summary": "Aave dominates DeFi lending with $25.7B TVL (62% market share)."
     },
-    "report_writer": {
-        "sections": {"5_on_chain_metrics": GMX_SECTION_5, "7_competitive_landscape": GMX_SECTION_7}
+    "onchain_analyst": {
+        "summary": "Aave shows strong on-chain fundamentals with $25.7B TVL across 20+ chains."
+    },
+    "tokenomics_analyst": {
+        "key_findings": ["Multi-chain protocol dominance with $25.6B TVL across 20+ chains"]
+    },
+    "governance_analyst": {
+        "key_findings": [
+            "Stani Kulechov has proven execution track record, successfully "
+            "building ETHLend into Aave with $61.9B TVL across 20+ chains"
+        ]
+    },
+    "maturation_scorer": {
+        "summary": "Aave demonstrates exceptional maturity as a DeFi blue chip with "
+                   "7+ years of operation, $61.9B TVL across 20+ chains."
+    },
+    "risk_officer": {
+        "key_findings": ["Aave: $61.9B TVL across 20+ chains demonstrates protocol maturity"]
     },
 }
 
 
-class IntraRunContradictionTest(unittest.TestCase):
-    """The acceptance case, and the near-misses that must stay quiet."""
+class MisbindingRegressionTest(unittest.TestCase):
+    """Figures the extractor binds to the wrong metric. None may reach a finding.
 
-    def test_the_report_writer_contradicting_itself_is_found(self):
-        out = reconcile_data(GMX_RUN, GMX_CTX, "full_run")
-        self.assertEqual(out["contradictions_found"], 1, out["status"])
-        finding = out["contradictions"][0]
-        self.assertEqual(finding["entity"], "GMX")
-        self.assertEqual(finding["metric"], "volume_30d_usd")
-        values = {c["value"] for c in finding["claims"]}
-        self.assertIn("$3,341,200", values)
-        self.assertTrue({"~$2.8B", "approximately $2.8B"} & values, values)
+    Each fixture is verbatim corpus text and each was a live false positive.
+    """
 
-    def test_the_odd_one_out_is_named_and_it_is_the_report_writer(self):
-        """"These disagree" is not actionable; "section 5 wrote it" is."""
-        finding = reconcile_data(GMX_RUN, GMX_CTX, "full_run")["contradictions"][0]
-        self.assertEqual(finding["outlier"]["value"], "$3,341,200")
-        self.assertIn("report_writer", finding["outlier"]["source"])
-        self.assertIn("5_on_chain_metrics", finding["outlier"]["source"])
+    def _claims(self, run, ctx):
+        out = reconcile_data(run, ctx, "full_run")
+        return out
 
-    def test_one_agent_can_contradict_itself_across_two_sections(self):
-        """The Report Writer alone, with no other agent in the run.
+    def test_a_buyback_is_not_a_thirty_day_volume(self):
+        """The case the first version of this module was built on, inverted.
 
-        This is the structural half of the defect: `reconcile_data` ran before
-        the Report Writer existed, and its cross-agent framing would have
-        skipped a single agent's output even if it had.
+        "over 30 days" sits thirteen characters from $3,341,200 with no digit
+        between, so adjacency alone binds it. The figure is 103,764 GMX restated
+        in dollars, and the governing noun is "Buybacks:".
         """
-        out = reconcile_data({"report_writer": GMX_RUN["report_writer"]}, GMX_CTX, "full_run")
-        self.assertEqual(out["contradictions_found"], 1, out["status"])
-
-    def test_the_same_section_never_contradicts_itself(self):
-        """Two figures in one section are a parse question, not a finding."""
-        one_section = {"report_writer": {"sections": {"5_on_chain_metrics": GMX_SECTION_5}}}
-        self.assertEqual(
-            reconcile_data(one_section, GMX_CTX, "full_run")["contradictions_found"], 0
-        )
-
-    def test_prose_extraction_is_not_optional_theatre(self):
-        """The measured yield gap: 5 structured numbers, dozens of prose claims."""
-        out = reconcile_data(GMX_RUN, GMX_CTX, "full_run")
-        self.assertGreater(out["prose_claims_extracted"], 5)
-        self.assertGreaterEqual(out["prose_agents_with_claims"], 2)
-
-
-class IntraRunPrecisionTest(unittest.TestCase):
-    """Every case here is a real near-miss from the corpus. All must be silent."""
-
-    def _found(self, run, ctx=None):
-        return reconcile_data(run, ctx or GMX_CTX, "full_run")["contradictions_found"]
-
-    def test_different_denominators_are_not_a_contradiction(self):
-        """GMX token spot volume ~$3M/day against GMX protocol perp volume
-        ~$150M/day. Both true, 50x apart, and the single most dangerous false
-        positive available — it is the shape of most real disagreements."""
         run = {
-            "risk_officer": {
-                "evidence": "GMX trades on Binance and numerous CEX/DEX venues "
-                            "with ~$3M aggregate 24h volume."
+            "report_writer": {
+                "sections": {
+                    "5_on_chain_metrics":
+                        "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days; "
+                        "168,500 GMX buybacks completed alongside the CEO appointment.",
+                    "7_competitive_landscape":
+                        "Hyperliquid processes ~$245B over 30 days, versus GMX's "
+                        "~$2.8B 30-day volume — an ~87x volume gap.",
+                }
             },
-            "onchain_analyst": {
-                "key_findings": ["Hyperliquid processes $30B+ daily vs GMX's "
-                                 "estimated $100-200M daily."]
+            "competitive_intel": {
+                "key_findings": ["GMX's 30-day volume is approximately $2.8B vs Hyperliquid's ~$245B."]
             },
         }
-        self.assertEqual(self._found(run), 0)
+        out = self._claims(run, GMX_CTX)
+        self.assertEqual(out["contradictions_found"], 0, render_contradictions(out))
+        self.assertEqual(out["uncorroborated_candidates"], [])
 
-    def test_the_same_quantity_at_two_dates_is_a_time_series(self):
-        run = {
-            "field_intel": {"key_findings": ["Hyperliquid held 36.4% of perp volume in January 2026."]},
-            "competitive_intel": {"key_findings": ["Hyperliquid holds ~44% of perp volume as of mid-2026."]},
-        }
-        self.assertEqual(self._found(run), 0)
+    def test_a_vesting_tranche_priced_at_fdv_is_not_the_fdv(self):
+        """"23.8% of total supply (238M HYPE, ~$19.4B FDV)" — verbatim.
 
-    def test_overlapping_hedged_ranges_agree(self):
+        The same agent says elsewhere, correctly, "FDV ($78B) is 4.3x market cap
+        ($18.2B)", so a naive read makes it contradict itself 4x.
+        """
         run = {
-            "competitive_intel": {"summary": "GMX's 30-day volume is ~$2.8B this period."},
-            "field_intel": {"summary": "GMX's 30-day volume is $2.5-3B this period."},
+            "legal_regulatory": {
+                "risks": [
+                    "Ongoing rolling Hyperliquid core contributor unlocks through 2027-2028: "
+                    "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting linearly",
+                    "Structural: Hyperliquid FDV ($78B) is 4.3x market cap ($18.2B).",
+                ]
+            },
+            "field_intel": {
+                "summary": "HYPE is trading near ATH at ~$81.73, placing Hyperliquid "
+                           "at a ~$78B FDV — near full price-discovery."
+            },
         }
-        self.assertEqual(self._found(run), 0)
+        out = self._claims(run, {**GMX_CTX, "project_name": "Hyperliquid"})
+        self.assertEqual(out["contradictions_found"], 0, render_contradictions(out))
 
-    def test_a_figure_and_its_component_are_not_a_contradiction(self):
-        """GMX TVL ~$300M in total, $174.88M for V2 Perps alone."""
+    def test_a_percentage_of_a_metric_is_not_the_metric(self):
+        """"~2.7% of market cap (~$1.16B)" — the shape consistency.py's own
+        docstring records, in the one form its no-digit rule cannot see: the
+        digits sit before the label, not between the label and the figure."""
         run = {
-            "onchain_analyst": {"summary": "GMX TVL is ~$300M across all chains."},
-            "tech_infra_analyst": {"summary": "DeFiLlama puts GMX V2 Perps TVL at $174.88M."},
+            "field_intel": {
+                "key_findings": [
+                    "NEXT UNLOCK: ~14.175M HYPE tokens unlock August 29, 2026 (4 days), "
+                    "representing 1.4% of total supply and ~2.7% of market cap (~$1.16B)."
+                ]
+            },
+            "legal_regulatory": {
+                "key_findings": ["HYPE is currently ranked #10 by market cap (~$18.2B)."]
+            },
         }
-        self.assertEqual(self._found(run), 0)
+        out = self._claims(run, {**GMX_CTX, "project_name": "Hyperliquid"})
+        self.assertEqual(out["contradictions_found"], 0, render_contradictions(out))
 
     def test_a_share_price_is_not_a_daily_volume(self):
-        """"GMX is in a daily uptrend, trading at $7.20" — verbatim from
-        technical_analyst. Adjacency alone binds "daily" to $7.20 and produces a
-        20,833,333x finding that no magnitude threshold can filter."""
+        """"GMX is in a daily uptrend, trading at $7.20" — "daily" labels the
+        uptrend. Unfiltered this is a 20,833,333x finding."""
         run = {
             "technical_analyst": {
                 "summary": "GMX is in a daily uptrend, trading at $7.20 — above all "
                            "three major EMAs and near the upper boundary of its range."
             },
             "onchain_analyst": {"key_findings": ["GMX's daily volume is $100-200M."]},
+            "field_intel": {"summary": "GMX V2 daily volume is ~$100-200M."},
+        }
+        out = self._claims(run, GMX_CTX)
+        self.assertEqual(out["contradictions_found"], 0, render_contradictions(out))
+
+    def test_the_labels_that_must_survive_all_of_the_above(self):
+        """The rules above are aggressive. These ordinary forms must still bind."""
+        run = {
+            "a": {"summary": "Aave's market cap ($75M) is small relative to peers."},
+            "b": {"summary": "Aave market cap is approximately $9.4B as of today."},
+        }
+        out = reconcile_data(run, AAVE_CTX, "full_run")
+        self.assertGreaterEqual(out["prose_claims_extracted"], 2,
+                                "ordinary 'metric ($value)' phrasing stopped binding")
+
+
+class CorroboratedSplitTest(unittest.TestCase):
+    """The acceptance case: two camps, each with independent backing."""
+
+    def test_the_aave_tvl_split_is_found(self):
+        out = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")
+        self.assertEqual(out["contradictions_found"], 1, out["status"])
+        finding = out["contradictions"][0]
+        self.assertEqual(finding["entity"], "Aave")
+        self.assertEqual(finding["metric"], "tvl_usd")
+        values = {camp["value"] for camp in finding["camps"]}
+        self.assertTrue({"$25.7B", "$25.6B"} & values, values)
+        self.assertIn("$61.9B", values)
+
+    def test_both_camps_name_their_backing_agents(self):
+        finding = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")["contradictions"][0]
+        backing = {camp["value"]: set(camp["agents"]) for camp in finding["camps"]}
+        for value, agents in backing.items():
+            self.assertGreaterEqual(len(agents), 2, f"{value} reported with one agent")
+        self.assertIn("governance_analyst", set().union(*backing.values()))
+
+    def test_near_values_merge_into_one_camp(self):
+        """$25.7B and $25.6B are one belief stated twice, not two camps."""
+        finding = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")["contradictions"][0]
+        self.assertEqual(len(finding["camps"]), 2)
+
+    def test_there_is_no_magnitude_gate(self):
+        """A corroborated 2.4x split reports. The check was rebuilt precisely
+        because magnitude ranked the corpus's false positive (50x) above its
+        true one (2.4x)."""
+        finding = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")["contradictions"][0]
+        self.assertLess(finding["ratio"], 3.0)
+
+    def test_the_report_writer_contradicting_itself_is_called_out(self):
+        """The shape this pass exists for: one agent on both sides of a split.
+
+        Synthetic, because the real instance is invisible to the extractor — in
+        c1479a94 the Report Writer does use $61.9B in section 2, but that
+        sentence ("The protocol ... with $61.9B in total value locked") names no
+        entity, and the extractor drops an unattributable claim rather than
+        defaulting it to the report's own subject.
+        """
+        run = dict(AAVE_RUN)
+        run["report_writer"] = {
+            "sections": {
+                "1_executive_summary": "Aave is the dominant lending protocol with "
+                                       "$25.7B TVL across 20+ chains.",
+                "2_project_overview": "Aave has become the market leader in DeFi "
+                                      "lending with $61.9B TVL across many chains.",
+            }
+        }
+        finding = reconcile_data(run, AAVE_CTX, "full_run")["contradictions"][0]
+        self.assertIn("report_writer", finding["self_contradicting_agents"])
+        self.assertIn("report_writer", render_contradictions(
+            reconcile_data(run, AAVE_CTX, "full_run")))
+
+
+class UncorroboratedIsSilentTest(unittest.TestCase):
+    """A lone dissenter is recorded, never rendered. Every fixture is real."""
+
+    def _out(self, run, ctx=None):
+        return reconcile_data(run, ctx or GMX_CTX, "full_run")
+
+    def test_a_lone_scope_difference_is_not_reported(self):
+        """~$3M is GMX-the-token across CEX/DEX venues; ~$150M is V2 perp
+        notional. 50x apart, both true, and the largest gap in the corpus."""
+        run = {
+            "risk_officer": {
+                "evidence": "GMX trades on Binance and numerous CEX/DEX venues with "
+                            "~$3M aggregate 24h volume."
+            },
+            "onchain_analyst": {"key_findings": ["GMX's estimated daily volume is $100-200M."]},
+            "report_writer": {"sections": {"7": "GMX's daily volume is $100-200M."}},
+        }
+        out = self._out(run)
+        self.assertEqual(out["contradictions_found"], 0)
+        self.assertEqual(render_contradictions(out), "")
+
+    def test_the_suppressed_candidate_is_still_recorded(self):
+        """Silent to the Chair, visible in the record. The evidence for
+        revisiting the corroboration rule must not be thrown away."""
+        run = {
+            "risk_officer": {"evidence": "GMX has ~$3M aggregate 24h volume."},
+            "onchain_analyst": {"key_findings": ["GMX's daily volume is $100-200M."]},
+            "report_writer": {"sections": {"7": "GMX's daily volume is $100-200M."}},
+        }
+        out = self._out(run)
+        self.assertEqual(len(out["uncorroborated_candidates"]), 1)
+        self.assertIn("agents", out["uncorroborated_candidates"][0]["values"][0])
+
+    def test_one_agent_restating_itself_is_one_voice(self):
+        """Four sections of the Report Writer are not four corroborations."""
+        run = {
+            "report_writer": {
+                "sections": {
+                    "1": "Aave TVL is $25.7B across 20+ chains.",
+                    "2": "Aave TVL is $25.7B across 20+ chains.",
+                    "3": "Aave TVL is $25.7B across 20+ chains.",
+                    "5": "Aave TVL is $61.9B across 20+ chains.",
+                }
+            }
+        }
+        self.assertEqual(self._out(run, AAVE_CTX)["contradictions_found"], 0)
+
+
+class IntraRunPrecisionTest(unittest.TestCase):
+    """Near-misses that must stay silent even when both sides are corroborated."""
+
+    def _found(self, run, ctx=None):
+        return reconcile_data(run, ctx or GMX_CTX, "full_run")["contradictions_found"]
+
+    def test_the_same_quantity_at_two_dates_is_a_time_series(self):
+        run = {
+            "field_intel": {"key_findings": ["Hyperliquid held 36.4% of perp volume in January 2026."]},
+            "onchain_analyst": {"risks": ["Hyperliquid held 36.4% of perp volume in January 2026."]},
+            "competitive_intel": {"key_findings": ["Hyperliquid holds ~44% of perp volume as of mid-2026."]},
+            "devils_advocate": {"summary": "Hyperliquid holds ~44% of perp volume as of mid-2026."},
+        }
+        self.assertEqual(self._found(run), 0)
+
+    def test_overlapping_hedged_ranges_agree(self):
+        run = {
+            "competitive_intel": {"summary": "GMX's 30-day volume is ~$2.8B this period."},
+            "onchain_analyst": {"summary": "GMX's 30-day volume is ~$2.8B this period."},
+            "field_intel": {"summary": "GMX's 30-day volume is $2.5-3B this period."},
+            "devils_advocate": {"summary": "GMX's 30-day volume is $2.5-3B this period."},
         }
         self.assertEqual(self._found(run), 0)
 
     def test_an_unresolvable_entity_is_dropped_not_guessed(self):
-        """Attributing a stray figure to the report's own subject is how a
-        third party's number becomes a claim about the project."""
         run = {
-            "a": {"summary": "Some unnamed protocol reports 30-day volume of $4."},
+            "a": {"summary": "Some unnamed protocol reports 30-day volume of $4,000."},
             "b": {"summary": "Another one reports 30-day volume of $9,000,000,000."},
+            "c": {"summary": "A third reports 30-day volume of $4,000."},
+            "d": {"summary": "A fourth reports 30-day volume of $9,000,000,000."},
         }
         self.assertEqual(self._found(run), 0)
+
+    def test_two_figures_in_one_section_never_contradict(self):
+        """A sentence disagreeing with itself is a parse question, not a finding."""
+        run = {
+            "report_writer": {
+                "sections": {"5": "Aave TVL is $25.7B across 20+ chains and Aave TVL is $61.9B."}
+            }
+        }
+        self.assertEqual(self._found(run, AAVE_CTX), 0)
 
 
 class IntraRunSafetyTest(unittest.TestCase):
     def test_a_clean_run_renders_nothing_at_all(self):
-        """Zero tokens on the common case, or the block is not worth having."""
-        out = reconcile_data({"a": {"summary": "GMX TVL is ~$300M."}}, GMX_CTX, "full_run")
+        """Zero tokens on the common case — 15 of 16 corpus runs — or the block
+        is not worth having."""
+        out = reconcile_data({"a": {"summary": "Aave TVL is ~$25.7B."}}, AAVE_CTX, "full_run")
         self.assertEqual(out["status"], "CLEAN")
         self.assertEqual(render_contradictions(out), "")
 
-    def test_the_rendered_block_names_both_figures_and_their_sources(self):
-        text = render_contradictions(reconcile_data(GMX_RUN, GMX_CTX, "full_run"))
-        self.assertIn("$3,341,200", text)
-        self.assertIn("report_writer sections.5_on_chain_metrics", text)
-        self.assertIn("competitive_intel", text)
+    def test_the_rendered_block_names_both_values_and_their_agents(self):
+        text = render_contradictions(reconcile_data(AAVE_RUN, AAVE_CTX, "full_run"))
+        self.assertIn("$61.9B", text)
+        self.assertIn("governance_analyst", text)
+        self.assertIn("onchain_analyst", text)
 
     def test_the_rendered_block_is_hard_capped(self):
-        text = render_contradictions(reconcile_data(GMX_RUN, GMX_CTX, "full_run"))
+        text = render_contradictions(reconcile_data(AAVE_RUN, AAVE_CTX, "full_run"))
         self.assertLessEqual(len(text), INTRA_RUN_RENDER_BUDGET)
 
     def test_reconciliation_can_never_fail_an_evaluation(self):
-        """It is a guard. Nothing downstream needs it to have succeeded, and a
-        run that dies here has lost fifteen agents of paid model calls."""
+        """It is a guard. A run that dies here has lost fifteen agents of paid
+        model calls to a warning system."""
         for junk in ({}, {"case_time": "not-a-date", "project_name": None}, {"project_aliases": 7}):
-            out = reconcile_data({"a": {"summary": "GMX TVL is ~$300M."}}, junk, "full_run")
+            out = reconcile_data({"a": {"summary": "Aave TVL is ~$25.7B."}}, junk, "full_run")
             self.assertIn("status", out)
 
     def test_malformed_agent_output_is_skipped_not_fatal(self):
-        run = {"a": None, "b": "just a string", "c": ["a", "list"], "d": GMX_RUN["report_writer"]}
-        reconcile_data(run, GMX_CTX, "full_run")
+        run = {"a": None, "b": "just a string", "c": ["a", "list"], "d": AAVE_RUN["risk_officer"]}
+        reconcile_data(run, AAVE_CTX, "full_run")
 
     def test_the_structured_path_still_works_alongside_the_prose_one(self):
         """QA-019 through QA-023 bought that path; prose is added, not swapped."""
-        out = reconcile_data({"a": {"tvl": 100.0}, "b": {"tvl": 1000.0}}, GMX_CTX, "full_run")
+        out = reconcile_data({"a": {"tvl": 100.0}, "b": {"tvl": 1000.0}}, AAVE_CTX, "full_run")
         self.assertEqual(out["inconsistencies_found"], 1)
         self.assertTrue(out["status"].startswith("WARNING"))
 

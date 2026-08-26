@@ -277,15 +277,20 @@ def reconcile_data(
 
     try:
         claims = _run_claims(agent_outputs, case_context)
-        contradictions = _detect_contradictions(claims)
+        contradictions, uncorroborated = _detect_contradictions(claims)
         claim_stats = {
             "prose_claims_extracted": len(claims),
             "prose_agents_with_claims": len({c.source_agent for c in claims}),
+            "uncorroborated_candidates": uncorroborated,
         }
     except Exception as exc:  # regex, import, malformed output — anything
         logger.warning("Prose reconciliation unavailable (non-fatal): %s", exc)
         contradictions = []
-        claim_stats = {"prose_claims_extracted": 0, "prose_agents_with_claims": 0}
+        claim_stats = {
+            "prose_claims_extracted": 0,
+            "prose_agents_with_claims": 0,
+            "uncorroborated_candidates": [],
+        }
 
     parts = []
     if inconsistencies:
@@ -463,28 +468,48 @@ def _relative_divergence(a: float, b: float) -> float:
 # agent restates a dated figure without repeating its date. Measured on GMX it
 # produced three findings, all three of that shape, none of them defects.
 
-#: How far apart two figures for one metric must be before a within-run
-#: disagreement is reported.
+#: How many DISTINCT AGENTS must assert a value before it can be one side of a
+#: reported contradiction.
 #:
-#: NOT A TOLERANCE — A SCOPE ALLOWANCE, AND IT IS CALIBRATED, NOT CHOSEN.
+#: THIS REPLACED A MAGNITUDE THRESHOLD, AND THE REPLACEMENT IS THE WHOLE POINT.
 #:
-#: The question this number answers is "could these two figures be two
-#: different quantities that share a name?", not "how much error is
-#: acceptable". Measured over five real evaluations (GMX, Hyperliquid x2,
-#: Aave, Chainlink; 137 extracted claims):
+#: The first version of this module gated on how far apart two figures were,
+#: calibrated against a contradiction that turned out not to exist: the GMX
+#: report's "$3,341,200 purchased over 30 days" is a *buyback*, and reading it
+#: as a 30-day trading volume was an extraction defect, now fixed in
+#: ``_binding_is_sound``. With that gone, the corpus says plainly that magnitude
+#: does not separate signal from noise — it ranks them backwards. Measured over
+#: all 16 persisted evaluations:
 #:
-#:     largest gap a legitimate scope difference produced      50x
-#:       (GMX token spot volume ~$3M/day vs GMX protocol perp volume ~$150M/day)
-#:     smallest gap of a genuine within-run contradiction     838x
-#:       (the buyback figure above, read as a 30-day volume)
+#:     50.0x  GMX 24h volume: ~$3M (token, across CEX/DEX) vs ~$150M (V2 perps)
+#:             -> two different quantities. FALSE.
+#:      2.4x  Aave TVL: $25.7B (three agents) vs $61.9B (three agents), both
+#:             phrased "across 20+ chains", the Report Writer using $25.7B in
+#:             section 1 and $61.9B in section 2 -> TRUE.
 #:
-#: 100x sits between them with an order of magnitude of margin on each side.
-#: The cost is explicit: a real 4x disagreement is not reported. That is the
-#: intended trade. A within-run check that fires on every evaluation is ignored
-#: within a week and then costs tokens forever without changing a decision.
-INTRA_RUN_MIN_RATIO = 100.0
+#: Any threshold admitting the true one admits the false one twenty times over.
+#:
+#: What does separate them is who is speaking. A figure only one agent ever
+#: states, differing from a figure several agents state, is almost always that
+#: agent measuring something adjacent and labelling it loosely — "GMX V2 Perps
+#: TVL ($174.88M)" against five agents' ~$300M, "~$3M aggregate 24h volume"
+#: against three agents' V2 perp volume, a footnote reading "Hyperliquid 70%+
+#: share, $2.8B TVL" against two agents' ~$6.66B. All three are scope or
+#: labelling differences and all three are suppressed by this rule. When two or
+#: more *independent* agents each arrive at the same incompatible value, the run
+#: is holding two beliefs rather than one agent using a private definition.
+#:
+#: Distinct agents, not distinct mentions: a Report Writer restating its own
+#: figure across four sections is one voice, not four.
+#:
+#: THE COST, STATED PLAINLY. A wrong figure invented by exactly one agent is
+#: never reported. That includes the Report Writer inventing one — the shape
+#: this pass was originally commissioned to catch. Those clusters are still
+#: computed and returned under ``uncorroborated_candidates``; they are simply
+#: not put in front of the Chair, because on this corpus every one of them was
+#: a scope difference and crying wolf is how a guard gets ignored.
+INTRA_RUN_MIN_CORROBORATION = 2
 
-#: At most this many findings reach a prompt. Worst-first.
 INTRA_RUN_MAX_FINDINGS = 3
 
 #: Hard ceiling on the rendered block, mirroring consistency.WARNING_CHAR_BUDGET.
@@ -494,12 +519,56 @@ INTRA_RUN_RENDER_BUDGET = 1400
 #: Strings shorter than this carry no extractable claim and cost time to scan.
 _MIN_PROSE_CHARS = 20
 
-#: Sources listed per finding before the rest are summarised as a count.
-_MAX_RENDERED_CLAIMS = 6
+#: Agents named per camp before the rest are summarised as a count.
+_MAX_RENDERED_AGENTS = 4
 
 #: A metric phrase *preceding* its value may not be reached across one of
 #: these. See `_binding_is_sound`.
 _BACKWARD_CLAUSE_BREAK = re.compile(r"[,;]|[—–]|\s-\s")
+
+#: Text ending in a quantity: a number, optionally a magnitude suffix, and at
+#: most one trailing word. "Buybacks: 103,764 GMX" ends in one; "small market
+#: cap" and "GMX V2 Perps TVL" do not. The one-word limit is what keeps "V2" in
+#: "GMX V2 Perps TVL" from making that phrase look like a quantity.
+_TRAILING_QUANTITY = re.compile(
+    r"\d[\d,.]*\s*(?:[KkMmBbTt]\b)?\s*(?:[A-Za-z][A-Za-z0-9.]{0,14})?$"
+)
+
+#: "…% of <metric>" — the metric is a denominator here, not a label. Anchored at
+#: the end so it tests the text immediately before the metric phrase.
+_DENOMINATOR_PREFIX = re.compile(r"%\s*(?:of|de)\s+$|\bof\s+$", re.I)
+
+#: Quantities this corpus states in dollars that the cross-report audit does
+#: not track. A figure closer to one of these than to its own metric label is
+#: governed by it.
+#:
+#: PRECISION-ONLY KNOB. Every term here can only *remove* claims, never create
+#: or misattribute one — the exact mirror of ``SEED_ENTITY_ALIASES``, which can
+#: only add them. Widening it is therefore always safe and never urgent.
+#:
+#: Each entry is a phrase found in the live corpus, not a guess:
+#:   buyback/purchased  "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
+#:   supply/vesting     "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting"
+#:   unlock             "~14.175M HYPE tokens unlock August 29, 2026"
+#:   staked/staking     "staking ~$45M", "sGMX on Arbitrum shows 7,424,699 staked"
+#:   treasury           "beyond DeFiLlama's $25.72M snapshot"
+#:   fees/revenue       "Annualized fees are ~$31.92M ... revenue ~$11.8-13.1M"
+#:   float              "~4.5% of float"
+#:   price/ATH/ATL      "trading at $7.20", "92.1% below the $91.07 ATH"
+#:   inflows            "record ETF inflows"
+_FOREIGN_QUANTITY = re.compile(
+    r"\b(?:"
+    r"buy[- ]?backs?|repurchas\w*|purchas\w*|bought|acquired|"
+    r"unlock\w*|vest\w*|emission\w*|"
+    r"stak\w*|burn\w*|"
+    r"treasury|reserves?|"
+    r"revenues?|fees?|"
+    r"float|circulating|supply|"
+    r"inflows?|outflows?|deposits?|withdrawals?|collateral|liquidations?|"
+    r"prices?|ATH|ATL|trading\s+at"
+    r")\b",
+    re.I,
+)
 
 
 class _RunClaim:
@@ -526,53 +595,73 @@ class _RunClaim:
         return (self.claim.lo + self.claim.hi) / 2.0
 
 
+class _Camp:
+    """One value that some set of agents assert, and who asserts it.
+
+    Members are merged by interval *overlap*, not by literal equality: "$25.7B"
+    and "$25.6B" are one belief stated twice, and counting them as two would
+    make a camp look less corroborated than it is.
+    """
+
+    __slots__ = ("members",)
+
+    def __init__(self, members: list[_RunClaim]) -> None:
+        self.members = members
+
+    @property
+    def agents(self) -> set[str]:
+        return {m.source_agent for m in self.members}
+
+    @property
+    def corroborated(self) -> bool:
+        return len(self.agents) >= INTRA_RUN_MIN_CORROBORATION
+
+    @property
+    def mid(self) -> float:
+        return sum(m.mid for m in self.members) / len(self.members)
+
+    @property
+    def label(self) -> str:
+        return self.members[0].claim.raw
+
+
 class _Contradiction:
-    """Two or more figures for one (entity, metric, period) that cannot all hold."""
+    """Two corroborated camps for one (entity, metric, period) that cannot both hold."""
 
     def __init__(self, entity: str, metric: str, label: str, unit: str,
-                 members: list[_RunClaim]) -> None:
+                 camps: list[_Camp]) -> None:
         self.entity = entity
         self.metric = metric
         self.label = label
         self.unit = unit
-        self.members = sorted(members, key=lambda m: m.mid)
+        self.camps = sorted(camps, key=lambda c: c.mid)
+
+    @property
+    def members(self) -> list[_RunClaim]:
+        return [m for camp in self.camps for m in camp.members]
 
     @property
     def ratio(self) -> float:
-        lo, hi = self.members[0].mid, self.members[-1].mid
+        lo, hi = self.camps[0].mid, self.camps[-1].mid
         return hi / lo if lo > 0 else float("inf")
 
     @property
     def period(self) -> str:
-        """Every period in the cluster, not just the first.
-
-        Periods are spans of differing width and comparison is by containment,
-        so a cluster can legitimately mix "2026-08" and "2026-mid". Reporting
-        only one of them would misstate what the figures actually claim.
-        """
         return " / ".join(sorted({m.claim.period for m in self.members}))
 
     @property
-    def outlier(self) -> _RunClaim:
-        """The single figure the others disagree with.
+    def split_by_one_agent(self) -> list[str]:
+        """Agents that are on both sides of the split — they contradict themselves.
 
-        The majority is the cluster of members within a factor of
-        ``INTRA_RUN_MIN_RATIO`` of the median; the outlier is the member
-        furthest from it. Naming it is what turns "these disagree" into
-        something a reader can act on — in the GMX case it points at
-        ``report_writer §5``, which is where the wrong number was written.
+        The Report Writer landing here is the report contradicting itself, which
+        is the case this whole pass exists for. On the Aave run it did: §1 says
+        $25.7B, §2 says $61.9B.
         """
-        mids = sorted(m.mid for m in self.members)
-        median = mids[len(mids) // 2]
-        return max(
-            self.members,
-            key=lambda m: max(m.mid / median, median / m.mid) if m.mid and median else 0.0,
-        )
-
-    @property
-    def agrees(self) -> list[_RunClaim]:
-        out = self.outlier
-        return [m for m in self.members if m is not out]
+        counts: dict[str, int] = {}
+        for camp in self.camps:
+            for agent in camp.agents:
+                counts[agent] = counts.get(agent, 0) + 1
+        return sorted(name for name, seen in counts.items() if seen > 1)
 
     def to_json(self) -> JSONObject:
         return {
@@ -582,20 +671,15 @@ class _Contradiction:
             "unit": self.unit,
             "period": self.period,
             "ratio": round(self.ratio, 1),
-            "outlier": {
-                "value": self.outlier.claim.raw,
-                "source": self.outlier.source,
-                "quote": self.outlier.claim.quote[:240],
-            },
-            "claims": [
+            "self_contradicting_agents": self.split_by_one_agent,
+            "camps": [
                 {
-                    "value": m.claim.raw,
-                    "lo": m.claim.lo,
-                    "hi": m.claim.hi,
-                    "source": m.source,
-                    "quote": m.claim.quote[:240],
+                    "value": camp.label,
+                    "agents": sorted(camp.agents),
+                    "sources": [m.source for m in camp.members],
+                    "quote": camp.members[0].claim.quote[:240],
                 }
-                for m in self.members
+                for camp in self.camps
             ],
         }
 
@@ -677,76 +761,205 @@ def _case_datetime(case_context: Mapping[str, Any]) -> datetime:
 
 
 def _binding_is_sound(claim: Any) -> bool:
-    """Reject a claim whose metric label only reaches it across a clause break.
+    """Whether the metric label the extractor chose actually governs this figure.
 
     ``consistency._classify_metric`` binds a metric phrase to a value by
-    adjacency in either direction: within 30 characters, with no digit in the
-    gap. Forward is safe — English writes "$6.66B TVL", "GMX's ~$2.8B 30-day
-    volume", "market cap ($75M)". Backward across a comma or a dash is not:
+    adjacency: within 30 characters, no digit in the gap, either direction. That
+    is right most of the time and wrong in three ways this corpus produces
+    constantly. Each rule below removes one of them, and each was written after
+    reading the sentence it fires on.
+
+    **1. A parenthetical that restates a preceding quantity.** This is the one
+    that matters, and it is the defect that made the first version of this
+    module report a contradiction that does not exist::
+
+        "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
+
+    $3,341,200 is 103,764 GMX priced in dollars — a *buyback*, restated in the
+    bracket. "over 30 days" is thirteen characters away with no digit between,
+    so the extractor read it as a 30-day trading volume and set it against the
+    same report's ~$2.8B of actual volume: an 838x "contradiction" between a
+    buyback and a volume, neither of which disagrees with anything. The same
+    shape, in the same corpus::
+
+        "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting linearly"
+
+    $19.4B is the value of the vesting tranche. The report says elsewhere, and
+    correctly, "FDV ($78B) is 4.3x market cap ($18.2B)".
+
+    The rule: a figure inside a bracket is a restatement, not an independent
+    claim, when a number precedes it *inside* that bracket, or when the text
+    immediately before the bracket ends in one. A bracket that follows a bare
+    label — "market cap ($75M)", "GMX V2 Perps TVL ($174.88M)", "FDV ($78B)" —
+    is the ordinary way this corpus states a figure and is untouched, which is
+    why the test is about the preceding *quantity* and not about the bracket.
+
+    **2. A nearer term naming a different quantity.** If some other metric's
+    phrase, or a quantity this audit does not track at all, sits closer to the
+    figure than the label that classified it, the closer one governs. The rival
+    metric phrases are derived from ``CANONICAL_METRICS``; the untracked
+    quantities are ``_FOREIGN_QUANTITY``.
+
+    **3. A label reaching backwards across a clause break.**::
 
         "GMX is in a daily uptrend, trading at $7.20 — above all three EMAs"
 
-    "daily" labels the *uptrend*. The extractor read $7.20 as GMX's 24-hour
-    volume and put a share price in a bucket with $100-200M, a 20,833,333x
-    "contradiction" that no threshold can filter and that would have been the
-    loudest finding in the GMX evaluation.
+    "daily" labels the uptrend. Forward binding is safe — English writes "$6.66B
+    TVL", "GMX's ~$2.8B 30-day volume" — so this applies in one direction only.
 
-    This is the same reasoning ``consistency._CLAUSE_BREAK`` already applies to
-    date qualifiers ("a parenthetical date must not lend itself to its
-    neighbours"), applied to metric labels, and applied in one direction only.
-    Parentheses are deliberately NOT breaks here: "market cap ($75M)" and
-    "DeFiLlama TVL: GMX (~$300M)" are the ordinary way this corpus writes a
-    figure, and treating "(" as a break costs five true claims per evaluation
-    to remove one false one.
+    A claim whose label cannot be re-derived from ``claim.quote`` at all is
+    kept: that is the signature of the extractor's continuation rule ("up from
+    36.4% in January 2026"), where the metric was stated several clauses back.
 
-    Implemented as a post-filter rather than a change to ``_classify_metric``
-    because that function belongs to the cross-report audit, whose corpus and
-    recall trade-offs are not this one's. It re-derives the binding from
-    ``claim.quote``; a claim whose label cannot be re-derived at all is kept,
-    because that is the signature of the continuation rule ("up from 36.4% in
-    January 2026"), where the metric is stated once several clauses earlier.
+    All of this is a post-filter rather than an edit to ``_classify_metric``,
+    which belongs to the cross-report audit and whose recall trade-offs are not
+    this one's. See the module note for the exact change that module needs if
+    these rules are ever adopted there.
     """
-    from app.knowledge.consistency import (
-        _ANY_NUMBER,
-        _METRIC_RES,
-        _METRIC_WINDOW,
-    )
+    located = _locate_value(claim)
+    if located is None:
+        return True
+    quote, start, end = located
 
+    if _restates_a_preceding_quantity(quote, start):
+        return False
+
+    own, denominators = _own_metric_bindings(quote, start, end, claim)
+    if not own:
+        # No re-derivable label. Normally that means the extractor's
+        # continuation rule supplied one from several clauses back, which this
+        # function cannot judge and must not veto. But if the only phrase in
+        # reach was a denominator reference, the label is accounted for and it
+        # does not govern this figure.
+        return not denominators
+
+    rivals = [d for d in (_nearest_rival(quote, start, end, claim.metric),) if d is not None]
+    rivals += denominators
+    if rivals and min(rivals) < min(distance for distance, _ in own):
+        return False
+
+    return any(not crosses_break for _distance, crosses_break in own)
+
+
+def _locate_value(claim: Any) -> tuple[str, int, int] | None:
+    """``(quote, start, end)`` for the literal this claim was parsed from."""
     quote, raw = claim.quote, claim.raw
     start = quote.find(raw)
     if start < 0:
-        return True
-    end = start + len(raw)
+        return None
+    return quote, start, start + len(raw)
 
-    saw_candidate = False
+
+def _restates_a_preceding_quantity(quote: str, start: int) -> bool:
+    """Whether the figure at ``start`` sits in a bracket restating a quantity."""
+    from app.knowledge.consistency import _ANY_NUMBER
+
+    opened = max(quote.rfind("(", 0, start), quote.rfind("[", 0, start))
+    if opened < 0:
+        return False
+    # A bracket that closed before the figure is not the figure's bracket.
+    closed = min(
+        (index for index in (quote.find(")", opened), quote.find("]", opened)) if index >= 0),
+        default=-1,
+    )
+    if 0 <= closed < start:
+        return False
+    if _ANY_NUMBER.search(quote[opened + 1:start]):
+        return True
+    return bool(_TRAILING_QUANTITY.search(quote[:opened].rstrip()))
+
+
+def _own_metric_bindings(
+    quote: str, start: int, end: int, claim: Any
+) -> tuple[list[tuple[int, bool]], list[int]]:
+    """How this claim's own label could reach the figure.
+
+    Returns ``(bindings, denominator_distances)``. A binding is
+    ``(distance, crosses_backward_break)``. A *denominator* is a phrase that
+    names the metric only as the thing a percentage is taken of::
+
+        "~14.175M HYPE unlock ... representing ~2.7% of market cap (~$1.16B)"
+
+    $1.16B is 2.7% of the market cap, not the market cap. The surface form is
+    identical to the legitimate "small market cap ($75M)", so the bracket rule
+    cannot separate them; the "of" is the entire signal. This is the false
+    positive ``consistency._classify_metric``'s docstring records — "~3.2% of
+    MCap" put Hyperliquid's market cap at $589M — surviving in the one shape
+    its no-digit-in-the-gap rule does not cover, because here the digits sit
+    before the label rather than between the label and the figure.
+
+    Percentage metrics are exempt: "share of on-chain perp volume" is a metric
+    name that contains "of", and treating that as a denominator would delete
+    every market-share claim in the corpus.
+    """
+    from app.knowledge.consistency import _ANY_NUMBER, _METRIC_RES, _METRIC_WINDOW
+
+    found: list[tuple[int, bool]] = []
+    denominators: list[int] = []
     for key, unit, regex in _METRIC_RES:
         if key != claim.metric or unit != claim.unit:
             continue
         for match in regex.finditer(quote):
+            if unit == "usd" and _DENOMINATOR_PREFIX.search(quote[:match.start()]):
+                distance = (
+                    start - match.end() if match.end() <= start else match.start() - end
+                )
+                if 0 <= distance <= _METRIC_WINDOW:
+                    denominators.append(distance)
+                continue
             if match.start() < end and match.end() > start:
-                return True  # the value sits inside the metric phrase
-            if match.end() <= start:
+                found.append((0, False))  # the figure sits inside the phrase
+            elif match.end() <= start:
                 gap = quote[match.end():start]
                 if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
                     continue
-                saw_candidate = True
-                if not _BACKWARD_CLAUSE_BREAK.search(gap):
-                    return True
+                found.append((start - match.end(), bool(_BACKWARD_CLAUSE_BREAK.search(gap))))
             else:
                 gap = quote[end:match.start()]
                 if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
                     continue
-                return True
-    return not saw_candidate
+                found.append((match.start() - end, False))
+    return found, denominators
 
 
-def _detect_contradictions(claims: Sequence[_RunClaim]) -> list[_Contradiction]:
-    """Group by (entity, metric) and return the buckets that cannot all hold.
+def _nearest_rival(quote: str, start: int, end: int, metric: str) -> int | None:
+    """Distance to the nearest term naming a quantity that is not ``metric``."""
+    from app.knowledge.consistency import _ANY_NUMBER, _METRIC_RES, _METRIC_WINDOW
 
-    Two members conflict when they come from different sources, their periods
-    are comparable, their hedged intervals are disjoint, and they are at least
-    ``INTRA_RUN_MIN_RATIO`` apart. Conflicting pairs are clustered transitively
-    so one metric produces one finding rather than one per pair.
+    candidates = [(key, regex) for key, _unit, regex in _METRIC_RES if key != metric]
+    candidates.append(("_foreign", _FOREIGN_QUANTITY))
+
+    best: int | None = None
+    for _key, regex in candidates:
+        for match in regex.finditer(quote):
+            if match.start() < end and match.end() > start:
+                continue
+            if match.end() <= start:
+                gap, distance = quote[match.end():start], start - match.end()
+            else:
+                gap, distance = quote[end:match.start()], match.start() - end
+            if distance > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
+                continue
+            if best is None or distance < best:
+                best = distance
+    return best
+
+
+def _detect_contradictions(
+    claims: Sequence[_RunClaim],
+) -> tuple[list[_Contradiction], list[JSONObject]]:
+    """Group by (entity, metric) and return ``(findings, uncorroborated)``.
+
+    A pair of claims clashes when they come from different sources, their
+    periods are comparable, and their hedged intervals are disjoint. Clashing
+    claims are clustered transitively, then the cluster is split into *camps* by
+    interval overlap, and a camp counts only if at least
+    ``INTRA_RUN_MIN_CORROBORATION`` **distinct agents** assert it.
+
+    A cluster with fewer than two corroborated camps is not discarded — it is
+    returned as an uncorroborated candidate, recorded in the result and shown to
+    nobody. That keeps the evidence for a later decision without paying prompt
+    tokens for it.
 
     ``_disjoint`` and ``_periods_comparable`` are the cross-report audit's own
     predicates, imported rather than restated: a within-run check that decided
@@ -764,47 +977,84 @@ def _detect_contradictions(claims: Sequence[_RunClaim]) -> list[_Contradiction]:
         buckets.setdefault((item.claim.entity, item.claim.metric), []).append(item)
 
     findings: list[_Contradiction] = []
+    uncorroborated: list[JSONObject] = []
+
     for (entity, metric), group in sorted(buckets.items()):
-        clusters: list[list[_RunClaim]] = []
-        for i, a in enumerate(group):
-            for b in group[i + 1:]:
-                if a.claim.evaluation_id == b.claim.evaluation_id:
-                    continue
-                if not _periods_comparable(a.claim.period, b.claim.period):
-                    continue
-                if not _disjoint(a.claim, b.claim):
-                    continue
-                if _ratio(a.mid, b.mid) < INTRA_RUN_MIN_RATIO:
-                    continue
-                joined = [c for c in clusters if a in c or b in c]
-                if joined:
-                    target = joined[0]
-                    for other in joined[1:]:
-                        target.extend(x for x in other if x not in target)
-                        clusters.remove(other)
-                    for x in (a, b):
-                        if x not in target:
-                            target.append(x)
-                else:
-                    clusters.append([a, b])
-
-        for cluster in clusters:
-            findings.append(
-                _Contradiction(
-                    entity=entity,
-                    metric=metric,
-                    label=str(CANONICAL_METRICS.get(metric, {}).get("label", metric)),
-                    unit=cluster[0].claim.unit,
-                    members=cluster,
+        for cluster in _cluster_clashes(group, _disjoint, _periods_comparable):
+            camps = _camps(cluster, _disjoint)
+            solid = [camp for camp in camps if camp.corroborated]
+            # The surviving camps must still contradict each other. Dropping an
+            # uncorroborated camp can leave two that overlap, and two camps that
+            # overlap are agreement.
+            solid = [
+                camp
+                for i, camp in enumerate(solid)
+                if any(
+                    _disjoint(camp.members[0].claim, other.members[0].claim)
+                    for j, other in enumerate(solid)
+                    if i != j
                 )
-            )
+            ]
+            label = str(CANONICAL_METRICS.get(metric, {}).get("label", metric))
+            if len(solid) >= 2:
+                findings.append(
+                    _Contradiction(entity, metric, label, cluster[0].claim.unit, solid)
+                )
+            else:
+                uncorroborated.append(
+                    {
+                        "entity": entity,
+                        "metric": metric,
+                        "reason": "no two values are asserted by %d or more agents each"
+                        % INTRA_RUN_MIN_CORROBORATION,
+                        "values": [
+                            {"value": camp.label, "agents": sorted(camp.agents)}
+                            for camp in camps
+                        ],
+                    }
+                )
 
-    return sorted(findings, key=lambda f: -f.ratio)
+    return sorted(findings, key=lambda f: -f.ratio), uncorroborated
 
 
-def _ratio(a: float, b: float) -> float:
-    lo, hi = sorted((a, b))
-    return hi / lo if lo > 0 else float("inf")
+def _cluster_clashes(
+    group: Sequence[_RunClaim], disjoint: Any, periods_comparable: Any
+) -> list[list[_RunClaim]]:
+    """Transitively cluster the claims in one bucket that clash pairwise."""
+    clusters: list[list[_RunClaim]] = []
+    for i, a in enumerate(group):
+        for b in group[i + 1:]:
+            if a.claim.evaluation_id == b.claim.evaluation_id:
+                continue
+            if not periods_comparable(a.claim.period, b.claim.period):
+                continue
+            if not disjoint(a.claim, b.claim):
+                continue
+            joined = [c for c in clusters if a in c or b in c]
+            if joined:
+                target = joined[0]
+                for other in joined[1:]:
+                    target.extend(x for x in other if x not in target)
+                    clusters.remove(other)
+                for x in (a, b):
+                    if x not in target:
+                        target.append(x)
+            else:
+                clusters.append([a, b])
+    return clusters
+
+
+def _camps(cluster: Sequence[_RunClaim], disjoint: Any) -> list[_Camp]:
+    """Split a cluster into camps of mutually overlapping values."""
+    camps: list[list[_RunClaim]] = []
+    for member in sorted(cluster, key=lambda m: m.mid):
+        for camp in camps:
+            if not disjoint(camp[0].claim, member.claim):
+                camp.append(member)
+                break
+        else:
+            camps.append([member])
+    return [_Camp(members) for members in camps]
 
 
 def render_contradictions(
@@ -825,9 +1075,10 @@ def render_contradictions(
 
     header = (
         "=== CONTRADICTIONS INSIDE THIS EVALUATION ===\n"
-        "A deterministic check found figures in this run's own output that cannot "
-        "all be true. This is arithmetic on the text, not a judgement about which "
-        "figure is right. Resolve each one before relying on either side of it, "
+        "Two or more agents in this run independently asserted incompatible values "
+        "for the figures below. This is arithmetic on their own text, not a "
+        "judgement about which side is right — and both sides have corroboration, "
+        "so neither is a stray. Resolve each one before relying on either value, "
         "and do not build a signpost or a trigger on a figure listed here.\n"
     )
     blocks: list[str] = []
@@ -844,25 +1095,26 @@ def render_contradictions(
 
 
 def _render_one(finding: Mapping[str, Any]) -> str:
-    outlier = finding.get("outlier") or {}
+    camps = list(finding.get("camps") or [])
     lines = [
-        "- {entity} — {label} ({period}): the figures are {ratio}x apart.".format(
+        "- {entity} — {label} ({period}): {n} incompatible figures, {ratio}x apart.".format(
             entity=finding.get("entity", "?"),
             label=finding.get("label", finding.get("metric", "?")),
             period=finding.get("period", "?"),
+            n=len(camps),
             ratio=finding.get("ratio", "?"),
         )
     ]
-    # A widely restated figure can carry a dozen agreeing sources. The reader
-    # needs the disagreement and enough of the other side to see which way the
-    # weight of the run falls, not a roll call.
-    claims = list(finding.get("claims") or [])
-    for claim in claims[:_MAX_RENDERED_CLAIMS]:
-        marker = "  <-- odd one out" if claim.get("source") == outlier.get("source") else ""
-        lines.append(f"    {claim.get('value', '?')}  [{claim.get('source', '?')}]{marker}")
-    if len(claims) > _MAX_RENDERED_CLAIMS:
-        lines.append(f"    ... and {len(claims) - _MAX_RENDERED_CLAIMS} more sources")
-    quote = str(outlier.get("quote") or "").strip()
-    if quote:
-        lines.append(f'    the odd one out, in context: "{quote[:200]}"')
+    for camp in camps:
+        agents = camp.get("agents") or []
+        shown = ", ".join(agents[:_MAX_RENDERED_AGENTS])
+        if len(agents) > _MAX_RENDERED_AGENTS:
+            shown += f" +{len(agents) - _MAX_RENDERED_AGENTS} more"
+        lines.append(f"    {camp.get('value', '?')}  — {shown}")
+    both = finding.get("self_contradicting_agents") or []
+    if both:
+        lines.append(
+            "    NOTE: %s state both. The report you are reading is inconsistent "
+            "with itself here." % ", ".join(both)
+        )
     return "\n".join(lines)

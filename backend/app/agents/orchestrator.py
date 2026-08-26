@@ -573,6 +573,31 @@ class Orchestrator:
                 defi_facts["unavailable"],
             )
         case_context = build_case_context(project_name, resolved, defi_facts)
+
+        # Known cross-report contradictions, from the periodic consistency sweep.
+        #
+        # Without this the sweep's findings are queryable over HTTP and read by
+        # nobody — an agent has no reason to go looking for a contradiction it
+        # does not know exists. Rendered beside the canonical metrics, where
+        # BaseAgent already surfaces case_context to every agent.
+        #
+        # Non-fatal by construction: a sweep that has never run, or a database
+        # that is unreachable, yields an empty string and the evaluation proceeds
+        # exactly as before. A warning system must not be able to stop the work
+        # it is warning about.
+        try:
+            from app.knowledge.consistency import render_active_warnings
+
+            warnings_text = await render_active_warnings()
+            if warnings_text:
+                case_context["known_contradictions"] = warnings_text
+                logger.info(
+                    "Surfaced %d chars of cross-report contradictions to the committee",
+                    len(warnings_text),
+                )
+        except Exception as exc:
+            logger.warning("Consistency warnings unavailable (non-fatal): %s", exc)
+
         context["case_context"] = case_context
 
         if on_status:

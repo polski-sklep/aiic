@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.knowledge.consistency import (
+    Status,
     AUDIT_EVERY_N_DAYS,
     AUDIT_EVERY_N_REPORTS,
     RECHECK_INTERVAL_HOURS,
@@ -42,7 +43,10 @@ class CorrectionRequest(BaseModel):
     """A correction is a new superseding revision, never an edit."""
 
     correction: str = Field(..., min_length=1, max_length=4000)
-    status: str = Field("confirmed_error")
+    # Typed as the Literal rather than str so an unknown status is rejected at
+    # the edge with a 422, instead of reaching supersede_finding as a value its
+    # signature does not admit.
+    status: Status = Field("confirmed_error")
 
 
 @router.get("/due")

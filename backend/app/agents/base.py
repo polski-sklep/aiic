@@ -192,6 +192,14 @@ You are evaluating: {project}"""
             )
             base += f"\nCase timestamp: {case_ctx.get('case_time', 'unknown')}"
 
+        # Contradictions the periodic sweep found between past reports. Rendered
+        # whether or not canonical metrics resolved — the two are independent,
+        # and a contradiction is worth knowing about even for a project whose
+        # baseline could not be fetched.
+        contradictions = case_ctx.get("known_contradictions")
+        if contradictions:
+            base += f"\n\n{contradictions}"
+
         if knowledge:
             base += f"\n\nRELEVANT PRIOR KNOWLEDGE:\n{knowledge}"
 

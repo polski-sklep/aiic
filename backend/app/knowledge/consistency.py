@@ -634,7 +634,7 @@ def _attribute_entity(
     Hyperliquid/GMX contradiction through.
     """
     best: tuple[int, str] | None = None
-    for start, end, canonical in mentions:
+    for _start, end, canonical in mentions:
         if end <= pos and pos - end <= _ATTRIBUTION_WINDOW:
             if best is None or end > best[0]:
                 best = (end, canonical)
@@ -953,10 +953,10 @@ def detect_conflicts(claims: Sequence[Claim]) -> list[Conflict]:
         seen: dict[tuple[float, float], list[Claim]] = {}
         for c in group:
             seen.setdefault((c.lo, c.hi), []).append(c)
-        for value, same_value in seen.items():
-            periods = {c.period for c in same_value}
+        for same_value in seen.values():
+            period_set = {c.period for c in same_value}
             evals = {c.evaluation_id for c in same_value}
-            if len(periods) < 2 or len(evals) < 2:
+            if len(period_set) < 2 or len(evals) < 2:
                 continue
             # At least one of the disagreeing datings has to be something the
             # prose actually asserted. If every period was inferred from a

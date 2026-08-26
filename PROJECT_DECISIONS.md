@@ -361,3 +361,48 @@ call, so `sync-committee` still takes effect with no restart at all.
 
 This is the sixth documented-vs-actual divergence found in this system, and the
 only one that would have been invisible from the repository alone.
+
+---
+
+## D15 — Within-run contradictions are gated on corroboration, not magnitude
+
+**Ambiguity:** a within-run consistency check needs some rule for deciding
+which disagreements are real. The obvious one is magnitude — flag figures that
+are far enough apart.
+
+**What forced the decision:** the case the check was commissioned to catch did
+not exist. I read GMX's `$3,341,200` as a 30-day trading volume contradicting
+the same report's `~$2.8B`, an 840x gap. The source text reads *"Buybacks:
+103,764 GMX ($3,341,200) purchased over 30 days"*. It is a buyback figure. The
+two numbers disagree about nothing, and the shared extractor had bound the
+figure to `volume_30d_usd` from the "30 days" window without consulting the
+noun sitting in front of it.
+
+**Consequence for the threshold:** with the fiction removed, magnitude ranks
+the real corpus backwards. Measured over all 16 persisted evaluations:
+
+- **50.0x** — GMX 24h volume, `~$3M` (token, across CEX/DEX) vs `~$150M` (V2
+  perps). Two different quantities. **False.**
+- **2.4x** — Aave TVL, `$25.7B` (five agents) vs `$61.9B` (three agents), both
+  phrased "across 20+ chains", no agent distinguishing them. **True.**
+
+Any threshold admitting the true finding admits the false one twenty times
+over.
+
+**Decision:** `INTRA_RUN_MIN_RATIO` was deleted rather than retuned. A value
+must be asserted by **two or more distinct agents** to be one side of a
+reported split. Distinct agents, not distinct mentions — the Report Writer
+restating itself across four sections is one voice.
+
+**Stated cost:** a wrong figure invented by exactly one agent is never
+reported, including one invented by the Report Writer, which is the shape the
+pass was originally commissioned for. On this corpus every such cluster was a
+scope difference — six of them across sixteen evaluations, none a defect. They
+are still computed and persisted under `uncorroborated_candidates`, rendered to
+nobody, so revisiting this is a one-line change against retained evidence
+rather than a re-derivation.
+
+**Second consequence:** the same mis-binding exists in the cross-report sweep
+in `knowledge/consistency.py`, which is what surfaced the GMX pair in the first
+place. `consistency_findings` was empty in production, so nothing wrong had
+reached the committee. Filed against `agent/consistency-audit`.

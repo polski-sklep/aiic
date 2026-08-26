@@ -30,7 +30,9 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | Prompt caching | `agent/prompt-caching` | Stable prefix, cache breakpoints, deterministic tool arrays | Integrated |
 | Canonical facts | `agent/canonical-facts` | DeFiLlama/CoinGecko resolution, `case_context` baseline figures | Integrated |
 | Delta report | `agent/delta-report` | Section 25 — what changed since the last evaluation | Integrated |
-| Consistency audit | `agent/consistency-audit` | Cross-report contradiction sweep, findings ledger, committee warnings | **In progress** (`detect_conflicts` crash, shared binding rules) |
+| Consistency audit | `agent/consistency-audit` | Cross-report contradiction sweep, findings ledger, committee warnings | Integrated |
+| Audit trigger | `agent/audit-trigger` | Make the sweep periodic — nothing has ever invoked it | **In progress** |
+| Run status | `agent/run-status` | An evaluation whose Report Writer failed is recorded `completed` | **In progress** |
 | Intra-run reconcile | `agent/intra-run-reconcile` | Within-evaluation contradiction detection (`reconcile_data` was inert) | Integrated |
 
 ## Ownership
@@ -53,6 +55,8 @@ See §1 of `docs/CONTRACTS.md` for the authoritative path→branch table. In sho
 - `agent/report-depth` — `agents/report_writer.py`, `agents/chair.py`
 - `agent/bot-queue`, `agent/notion-*`, `agent/report-delivery` — `telegram_bot.py`,
   `tools/notion.py`
+- `agent/audit-trigger` — `main.py` lifespan, `api/consistency.py`
+- `agent/run-status` — `agents/orchestrator.py`, `api/evaluate.py`, `models/`, `migrations/`
 - `agent/retrospective`, `agent/security` — documents only, no code
 
 Review agents report; owning agents fix. QA finding a calibration defect files it

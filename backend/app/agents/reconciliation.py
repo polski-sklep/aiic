@@ -420,14 +420,26 @@ def _relative_divergence(a: float, b: float) -> float:
 #
 # Live GMX evaluation, 15 agents. `_extract_metrics` found 5 numbers in total,
 # four of them inside `tokenomics_analyst`. Nothing could be compared, so
-# `reconcile_data` returned `inconsistencies_found: 0` while the report it was
-# supposed to be guarding said both of these:
+# `reconcile_data` returned `inconsistencies_found: 0` for that run and for
+# every other run in the corpus — the figures agents actually disagree about
+# are in `summary`, `key_findings` and the Report Writer's 24 sections, as
+# sentences. Reading the prose takes the same corpus from 59 structured numbers
+# across 16 evaluations to 132 comparable claims.
 #
-#     report_writer §5_on_chain_metrics   "...($3,341,200) purchased over 30 days"
-#     report_writer §7_competitive_landscape  "versus GMX's ~$2.8B 30-day volume"
+# The contradiction that yield buys, from Aave evaluation c1479a94:
 #
-# 838x apart, in one agent's own output, two sections apart, and neither number
-# is a structured field. The old check could not have seen either of them.
+#     competitive_intel   "Aave dominates DeFi lending with $25.7B TVL"
+#     onchain_analyst     "$25.7B TVL across 20+ chains"
+#     tokenomics_analyst  "$25.6B TVL across 20+ chains"
+#     governance_analyst  "...into Aave with $61.9B TVL across 20+ chains"
+#     maturation_scorer   "$61.9B TVL across 20+ chains"
+#     risk_officer        "$61.9B TVL across 20+ chains demonstrates maturity"
+#
+# Two irreconcilable figures for one metric, three agents behind each, the same
+# "across 20+ chains" qualifier on both, and no agent anywhere saying they are
+# different quantities. The Report Writer put $25.7B in its executive summary
+# and $61.9B in its project overview; the Chair then decided on $25.7B, never
+# told that half the committee was at $61.9B.
 #
 # WHY THIS RE-KEYS `evaluation_id` INSTEAD OF EXTENDING consistency.py
 #

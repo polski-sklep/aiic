@@ -773,10 +773,12 @@ class Orchestrator:
         # synthesis and before the Report Writer exists. So the one agent that
         # assembles every other agent's figures into a single document — and
         # therefore the one agent that can contradict *itself* — was the only
-        # agent nothing checked. The defect this fixes is exactly that shape:
-        # the GMX report gave GMX's 30-day volume as $3,341,200 in
-        # §5_on_chain_metrics and as ~$2.8B in §7_competitive_landscape, 838x
-        # apart, both written by report_writer.
+        # agent nothing checked. On Aave evaluation c1479a94 three agents put
+        # Aave's TVL at $25.7B and three others at $61.9B, both "across 20+
+        # chains"; the Report Writer used the first figure in its executive
+        # summary and the second in its project overview, and the Chair decided
+        # on $25.7B without ever being told half the committee disagreed. The
+        # first pass could not have seen it: it runs before the report exists.
         #
         # WHY HERE AND NOT LATER. Two agents still run after this point, and
         # both of them are adjudicators — Ray reviews the report, the Chair

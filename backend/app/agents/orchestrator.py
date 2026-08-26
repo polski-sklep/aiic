@@ -800,7 +800,7 @@ class Orchestrator:
         # reconciled in the data-layer pass, which reaches no prompt.
         #
         # Measured cost of the exclusion on the GMX run: zero. Its one
-        # extractable figure was "trading at $7.20", which `_binding_is_sound`
+        # extractable figure was "trading at $7.20", which `consistency.binding_is_sound`
         # already refuses as a share price mislabelled a daily volume.
         chair_visible = {
             name: output

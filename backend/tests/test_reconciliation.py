@@ -193,8 +193,20 @@ AAVE_RUN = {
     "onchain_analyst": {
         "summary": "Aave shows strong on-chain fundamentals with $25.7B TVL across 20+ chains."
     },
+    # Verbatim. The entity resolves from "AAVE" earlier in the same sentence —
+    # this agent's key_findings line ("Multi-chain protocol dominance with
+    # $25.6B TVL across 20+ chains") names none and is correctly dropped.
     "tokenomics_analyst": {
-        "key_findings": ["Multi-chain protocol dominance with $25.6B TVL across 20+ chains"]
+        "value_accrual_assessment":
+            "Strong value accrual mechanisms through multiple channels: (1) Safety "
+            "Module staking with $275M+ staked AAVE earning rewards and providing "
+            "protocol backstop, (2) Governance rights over a $25.6B TVL protocol"
+    },
+    "report_writer": {
+        "sections": {
+            "1_executive_summary": "Aave is the dominant DeFi lending protocol with "
+                                   "$25.7B TVL across 20+ chains."
+        }
     },
     "governance_analyst": {
         "key_findings": [
@@ -323,8 +335,7 @@ class CorroboratedSplitTest(unittest.TestCase):
         self.assertEqual(finding["entity"], "Aave")
         self.assertEqual(finding["metric"], "tvl_usd")
         values = {camp["value"] for camp in finding["camps"]}
-        self.assertTrue({"$25.7B", "$25.6B"} & values, values)
-        self.assertIn("$61.9B", values)
+        self.assertEqual(values, {"$25.7B", "$61.9B"}, values)
 
     def test_both_camps_name_their_backing_agents(self):
         finding = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")["contradictions"][0]
@@ -337,6 +348,24 @@ class CorroboratedSplitTest(unittest.TestCase):
         """$25.7B and $25.6B are one belief stated twice, not two camps."""
         finding = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")["contradictions"][0]
         self.assertEqual(len(finding["camps"]), 2)
+
+    def test_a_camp_is_labelled_with_what_its_agents_actually_wrote(self):
+        """The camp holds four "$25.7B" and one "$25.6B". It must render
+        "$25.7B" — the value four of its five agents wrote.
+
+        Labelling it from the first member returned "$25.6B", attributing to
+        competitive_intel, onchain_analyst and report_writer a figure only
+        tokenomics_analyst had written. A block that exists to quote agents back
+        to the Chair may not misquote them, least of all while flagging the
+        report for misattributed figures.
+        """
+        out = reconcile_data(AAVE_RUN, AAVE_CTX, "full_run")
+        camps = {camp["value"]: camp for camp in out["contradictions"][0]["camps"]}
+        self.assertIn("$25.7B", camps)
+        self.assertNotIn("$25.6B", camps)
+        self.assertIn("tokenomics_analyst", camps["$25.7B"]["agents"])
+        self.assertIn("$25.7B  —", render_contradictions(out))
+        self.assertNotIn("$25.6B", render_contradictions(out))
 
     def test_there_is_no_magnitude_gate(self):
         """A corroborated 2.4x split reports. The check was rebuilt precisely

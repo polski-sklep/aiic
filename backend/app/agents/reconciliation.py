@@ -633,8 +633,33 @@ class _Camp:
         return sum(m.mid for m in self.members) / len(self.members)
 
     @property
+    def representative(self) -> _RunClaim:
+        """The member whose wording actually speaks for this camp.
+
+        Modal raw string first, ties broken by closeness to the camp's median.
+
+        This was ``members[0]``, and ``_camps`` appends in ascending value
+        order, so it returned the camp's *lowest* member. On the live Aave
+        finding the $25.7B camp therefore rendered as "$25.6B — competitive_intel,
+        onchain_analyst, report_writer, tokenomics_analyst": four agents
+        attributed a figure only the fifth had written. A 0.4% error that
+        decides nothing, in the one block whose whole claim to authority is
+        that it quotes the agents' own text back at them — and it was doing so
+        while accusing the report of misattributing figures.
+        """
+        counts: dict[str, int] = {}
+        for member in self.members:
+            counts[member.claim.raw] = counts.get(member.claim.raw, 0) + 1
+        mids = sorted(member.mid for member in self.members)
+        median = mids[len(mids) // 2]
+        return min(
+            self.members,
+            key=lambda m: (-counts[m.claim.raw], abs(m.mid - median), m.claim.raw),
+        )
+
+    @property
     def label(self) -> str:
-        return self.members[0].claim.raw
+        return self.representative.claim.raw
 
 
 class _Contradiction:
@@ -689,7 +714,7 @@ class _Contradiction:
                     "value": camp.label,
                     "agents": sorted(camp.agents),
                     "sources": [m.source for m in camp.members],
-                    "quote": camp.members[0].claim.quote[:240],
+                    "quote": camp.representative.claim.quote[:240],
                 }
                 for camp in self.camps
             ],

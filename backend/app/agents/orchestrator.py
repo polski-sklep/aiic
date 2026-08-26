@@ -30,7 +30,11 @@ from app.agents.data_agents import (
 )
 from app.agents.guardrails import run_structural_gate
 from app.agents.ray import RayDalio
-from app.agents.reconciliation import build_case_context, reconcile_data
+from app.agents.reconciliation import (
+    build_case_context,
+    fetch_canonical_defi_facts,
+    reconcile_data,
+)
 from app.agents.report_writer import ReportWriter
 from app.agents.risk_officer import RiskOfficer
 from app.agents.synthesis_agents import DevilsAdvocate, MaturationScorer, PortfolioManager
@@ -555,7 +559,20 @@ class Orchestrator:
         resolved = await self._resolve_protocol(project_name, project_info)
         context["project_info"] = resolved
 
-        case_context = build_case_context(project_name, resolved)
+        # The canonical baseline is CoinGecko (already in `resolved`) plus the
+        # DeFiLlama figures fetched here. TVL, fees and revenue are contested,
+        # fast-moving and — unlike price — not something an agent gets handed by
+        # a single obvious endpoint, so without a baseline every agent re-derives
+        # them from web_search and lands wherever that minute's ranking lands.
+        # Four small requests, ~20 KB, no API key.
+        defi_facts = await fetch_canonical_defi_facts(project_name, resolved)
+        if defi_facts.get("unavailable"):
+            logger.info(
+                "Canonical DeFiLlama baseline for %s incomplete: %s",
+                project_name,
+                defi_facts["unavailable"],
+            )
+        case_context = build_case_context(project_name, resolved, defi_facts)
         context["case_context"] = case_context
 
         if on_status:

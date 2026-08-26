@@ -494,6 +494,9 @@ INTRA_RUN_RENDER_BUDGET = 1400
 #: Strings shorter than this carry no extractable claim and cost time to scan.
 _MIN_PROSE_CHARS = 20
 
+#: Sources listed per finding before the rest are summarised as a count.
+_MAX_RENDERED_CLAIMS = 6
+
 #: A metric phrase *preceding* its value may not be reached across one of
 #: these. See `_binding_is_sound`.
 _BACKWARD_CLAUSE_BREAK = re.compile(r"[,;]|[—–]|\s-\s")
@@ -541,7 +544,13 @@ class _Contradiction:
 
     @property
     def period(self) -> str:
-        return self.members[0].claim.period
+        """Every period in the cluster, not just the first.
+
+        Periods are spans of differing width and comparison is by containment,
+        so a cluster can legitimately mix "2026-08" and "2026-mid". Reporting
+        only one of them would misstate what the figures actually claim.
+        """
+        return " / ".join(sorted({m.claim.period for m in self.members}))
 
     @property
     def outlier(self) -> _RunClaim:
@@ -844,9 +853,15 @@ def _render_one(finding: Mapping[str, Any]) -> str:
             ratio=finding.get("ratio", "?"),
         )
     ]
-    for claim in finding.get("claims") or []:
+    # A widely restated figure can carry a dozen agreeing sources. The reader
+    # needs the disagreement and enough of the other side to see which way the
+    # weight of the run falls, not a roll call.
+    claims = list(finding.get("claims") or [])
+    for claim in claims[:_MAX_RENDERED_CLAIMS]:
         marker = "  <-- odd one out" if claim.get("source") == outlier.get("source") else ""
         lines.append(f"    {claim.get('value', '?')}  [{claim.get('source', '?')}]{marker}")
+    if len(claims) > _MAX_RENDERED_CLAIMS:
+        lines.append(f"    ... and {len(claims) - _MAX_RENDERED_CLAIMS} more sources")
     quote = str(outlier.get("quote") or "").strip()
     if quote:
         lines.append(f'    the odd one out, in context: "{quote[:200]}"')

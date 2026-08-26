@@ -1,4 +1,9 @@
 from __future__ import annotations
+
+import asyncio
+import math
+import re
+from datetime import datetime, timezone
 from typing import TypedDict, cast
 
 import httpx
@@ -190,6 +195,256 @@ async def get_protocol_fees(args: ToolArguments) -> ProtocolFeesResult | ToolErr
             )
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Canonical baseline facts
+#
+# Not a tool. `agents/reconciliation.build_case_context` calls this once per
+# evaluation, before any agent runs, to put deterministically-fetchable DeFi
+# figures into the shared baseline every agent is handed.
+#
+# WHY IT DOES NOT USE get_tvl / get_protocol_fees
+#
+# `get_tvl` fetches `/protocol/{slug}`, which carries the protocol's entire
+# daily TVL history: 18 MB for Pendle, 11 MB for Morpho, 10 MB for Aave, all to
+# read one current number. That is the right trade for an agent that wants the
+# 7-day trend; it is the wrong one for a baseline fetched on every run. The
+# three endpoints below return 0.4-16 KB each and are enough for the baseline:
+#
+#   /config/smol/{slug}  — identity only (name, gecko_id, symbol). Confirms the
+#                          slug we guessed is the protocol we mean.
+#   /tvl/{slug}          — a bare number, nothing else.
+#   /summary/fees/{slug} — with the chart series excluded.
+#
+# WHAT IS DELIBERATELY ABSENT: CATEGORY / MARKET SHARE
+#
+# Share of a category is the figure that produced the defect this module exists
+# to fix, and it is the one figure here we must not synthesise. Two independent
+# reasons, both verified against the live API on 2026-08-26:
+#
+# 1. The perpetuals dimension is not on the keyless API. Both
+#    `GET /summary/derivatives/{slug}` and `GET /overview/derivatives` answer
+#    `HTTP 402 "Upgrade to the paid API plan"`. The exact quantity in dispute —
+#    perp volume, whose denominator any share of perp volume needs — cannot be
+#    fetched at all without a subscription.
+# 2. Even where a dimension *is* free (`/overview/dexs`), "share" is not a
+#    published number but an arithmetic result whose value is decided by a
+#    denominator we would be choosing: perp DEXs only, all DEXs, or DEXs plus
+#    centralised venues. The two irreconcilable figures in the reports that
+#    prompted this work — ~44% and 70-80% — are most likely two different
+#    denominators rather than one of them being false.
+#
+# A canonical figure is treated by every agent as ground truth. Publishing one
+# we computed from a peer set we picked ourselves would convert a contested
+# estimate into an unchallengeable one. So share stays out of the metrics, and
+# `_rule` (see reconciliation.py) tells agents in as many words that any figure
+# absent from the baseline is uncanonical and needs a date and a named source.
+# ---------------------------------------------------------------------------
+
+#: Endpoints used for the baseline. Kept separate from BASE_URL usage above so
+#: the deliberately-light choice is visible in one place.
+CANONICAL_TIMEOUT = 12.0
+
+_SLUG_STRIP = re.compile(r"[^a-z0-9-]+")
+
+
+class CanonicalDefiFacts(TypedDict, total=False):
+    """Deterministically-fetched DeFi figures for one project.
+
+    Every key is optional and, critically, **absent when not retrieved**. A
+    caller must never see 0.0 for "we did not fetch this": DeFiLlama answers
+    `GET /tvl/plasma` with HTTP 200 and a zero-byte body, and `float(text or 0)`
+    would turn "this protocol publishes no TVL" into "this protocol has no
+    value locked".
+    """
+
+    slug: str
+    name: str
+    tvl_usd: float
+    fees_30d_usd: float
+    revenue_30d_usd: float
+    fetched_at: str
+    unavailable: str
+
+
+def _slugify(value: str) -> str:
+    return _SLUG_STRIP.sub("-", value.lower().strip().replace(" ", "-")).strip("-")
+
+
+def _slug_candidates(project_name: str, coingecko_id: str, slug_hint: str) -> list[str]:
+    """Slugs to try, best evidence first, deduplicated and order-preserving."""
+    ordered = [_slugify(slug_hint), _slugify(coingecko_id), _slugify(project_name)]
+    return [slug for slug in dict.fromkeys(ordered) if slug]
+
+
+async def _resolve_slug(
+    client: httpx.AsyncClient, project_name: str, coingecko_id: str, slug_hint: str
+) -> tuple[str, dict[str, JSONValue]] | str:
+    """Find the DeFiLlama slug for this project, or say why we could not.
+
+    Returns ``(slug, identity)`` on success and a human-readable reason string
+    on failure. Guessing a slug from a project name is cheap and usually right,
+    but "usually" is not good enough for a figure every agent will treat as
+    ground truth — Plasma, Morpho and Ethena each have four or more DeFiLlama
+    entries whose names contain the project name and whose TVLs differ by three
+    orders of magnitude. So a guessed slug is accepted only against positive
+    identity evidence from `/config/smol/{slug}`:
+
+    * its ``gecko_id`` equals the CoinGecko id we already resolved, or
+    * we have no CoinGecko id and its ``name`` equals the project name.
+
+    An explicit ``defillama_slug`` in project_info is an operator assertion and
+    is trusted as given. Anything else is rejected, and the reason is reported
+    rather than swallowed, because a wrong canonical figure is worse than none.
+    """
+    hint = _slugify(slug_hint)
+    wanted_gecko = _slugify(coingecko_id)
+    wanted_name = project_name.lower().strip()
+    tried: list[str] = []
+
+    for slug in _slug_candidates(project_name, coingecko_id, slug_hint):
+        tried.append(slug)
+        try:
+            resp = await client.get(f"{BASE_URL}/config/smol/{slug}")
+        except httpx.HTTPError as exc:
+            return f"DeFiLlama could not be reached ({type(exc).__name__})"
+        if resp.status_code == 404:
+            continue
+        if resp.status_code != 200:
+            return f"DeFiLlama returned HTTP {resp.status_code} while resolving '{slug}'"
+        try:
+            identity = cast(dict[str, JSONValue], resp.json())
+        except ValueError:
+            continue
+        if not isinstance(identity, dict):
+            continue
+
+        if slug == hint:
+            return slug, identity
+
+        gecko = _slugify(str(identity.get("gecko_id") or ""))
+        name = str(identity.get("name") or "").lower().strip()
+        if wanted_gecko:
+            if gecko == wanted_gecko:
+                return slug, identity
+            return (
+                f"DeFiLlama '{slug}' maps to CoinGecko id "
+                f"'{gecko or 'none'}', not '{wanted_gecko}' — not treated as the "
+                f"same protocol"
+            )
+        if name and name == wanted_name:
+            return slug, identity
+        return f"DeFiLlama '{slug}' is '{identity.get('name')}', which we could not confirm is {project_name}"
+
+    return f"no DeFiLlama protocol matched {tried or [project_name]}"
+
+
+async def _fetch_tvl_number(client: httpx.AsyncClient, slug: str) -> float | None:
+    """Current total TVL, or None when DeFiLlama publishes none for this slug.
+
+    `/tvl/{slug}` answers with a bare number in the body. Three outcomes have to
+    stay apart: a number, "listed but no TVL series" (HTTP 200, empty body —
+    this is what Plasma and GEODNET return), and "no such slug" (HTTP 400,
+    body ``Protocol not found``). Only the first is a figure.
+    """
+    try:
+        resp = await client.get(f"{BASE_URL}/tvl/{slug}")
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    text = resp.text.strip().strip('"')
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+async def _fetch_fee_total_30d(
+    client: httpx.AsyncClient, slug: str, data_type: str
+) -> float | None:
+    """Trailing-30-day fees or revenue, or None when there is no such series."""
+    try:
+        resp = await client.get(
+            f"{BASE_URL}/summary/fees/{slug}",
+            params={
+                "dataType": data_type,
+                "excludeTotalDataChart": "true",
+                "excludeTotalDataChartBreakdown": "true",
+            },
+        )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = cast(dict[str, JSONValue], resp.json())
+    except ValueError:
+        return None
+    total = data.get("total30d") if isinstance(data, dict) else None
+    if isinstance(total, bool) or not isinstance(total, (int, float)):
+        return None
+    return float(total)
+
+
+async def fetch_canonical_facts(
+    project_name: str, coingecko_id: str = "", slug_hint: str = ""
+) -> CanonicalDefiFacts:
+    """Fetch the DeFiLlama half of the canonical baseline for one project.
+
+    Never raises and never guesses. On any failure the numeric keys are simply
+    absent and ``unavailable`` carries the reason, so the caller can tell "we
+    did not fetch this" from "this is zero" and say so to the agents.
+    """
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=CANONICAL_TIMEOUT) as client:
+            resolution = await _resolve_slug(client, project_name, coingecko_id, slug_hint)
+            if isinstance(resolution, str):
+                return {"fetched_at": fetched_at, "unavailable": resolution}
+            slug, identity = resolution
+
+            tvl, fees_30d, revenue_30d = await asyncio.gather(
+                _fetch_tvl_number(client, slug),
+                _fetch_fee_total_30d(client, slug, "dailyFees"),
+                _fetch_fee_total_30d(client, slug, "dailyRevenue"),
+            )
+    except httpx.HTTPError as exc:
+        return {
+            "fetched_at": fetched_at,
+            "unavailable": f"DeFiLlama could not be reached ({type(exc).__name__})",
+        }
+
+    facts: CanonicalDefiFacts = {
+        "slug": slug,
+        "name": str(identity.get("name") or project_name),
+        "fetched_at": fetched_at,
+    }
+    if tvl is not None:
+        facts["tvl_usd"] = tvl
+    if fees_30d is not None:
+        facts["fees_30d_usd"] = fees_30d
+    if revenue_30d is not None:
+        facts["revenue_30d_usd"] = revenue_30d
+
+    missing = [
+        label
+        for label, value in (
+            ("TVL", tvl),
+            ("fees", fees_30d),
+            ("revenue", revenue_30d),
+        )
+        if value is None
+    ]
+    if missing:
+        facts["unavailable"] = (
+            f"DeFiLlama publishes no {', '.join(missing)} for protocol '{slug}'"
+        )
+    return facts
 
 
 def register(registry: ToolRegistrar) -> None:

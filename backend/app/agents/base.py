@@ -184,7 +184,12 @@ You are evaluating: {project}"""
         canonical = case_ctx.get("canonical_metrics", {})
         if canonical:
             import json as _json
-            base += f"\n\nCANONICAL METRICS (use as baseline, flag discrepancies):\n{_json.dumps(canonical, default=str, sort_keys=True)}"
+            base += (
+                "\n\nCANONICAL METRICS — the committee's baseline for this "
+                "evaluation. Use these figures. Where you depart from one, say so "
+                "in key_findings with your figure, your source and its as-of date:\n"
+                f"{_json.dumps(canonical, default=str, sort_keys=True)}"
+            )
             base += f"\nCase timestamp: {case_ctx.get('case_time', 'unknown')}"
 
         if knowledge:

@@ -144,7 +144,11 @@ def build_case_context(
             else "price/market cap/volume/supply: not fetched",
             _defillama_clause(defi),
         ))
-        metrics["_rule"] = BASELINE_RULE
+        # `_rule` deliberately not attached: base.py's CANONICAL METRICS heading
+        # now carries that instruction, and the heading is the better home — it
+        # cannot be mistaken for a metric. Keeping both cost ~114 tokens per
+        # agent, i.e. ~1,700 per evaluation, to say the same thing twice.
+        # BASELINE_RULE is retained as the single source of that wording.
 
     return {
         "case_time": now.isoformat(),

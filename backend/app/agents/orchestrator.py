@@ -710,8 +710,8 @@ class Orchestrator:
 
         if on_status:
             await on_status("step", "data_reconciliation", {})
-        reconciliation = _reconcile(prior, case_context, "data_layer")
-        context["reconciliation"] = reconciliation
+        data_layer_reconciliation = _reconcile(prior, case_context, "data_layer")
+        context["reconciliation"] = data_layer_reconciliation
 
         if on_status:
             await on_status("step", "4_maturation_scoring", {})
@@ -785,15 +785,17 @@ class Orchestrator:
         # to that decision. Later would also be cheaper and useless, which is
         # what the first pass already was.
         #
-        # WHY NOT INSTEAD OF THE FIRST PASS. The first pass is what the eight
-        # data agents' figures are checked against each other in, it costs no
-        # tokens, and its result is on the wire (`data_reconciliation`) for the
-        # status stream. Keeping both means a disagreement introduced by the
-        # data layer and one introduced by synthesis are distinguishable.
+        # WHY NOT INSTEAD OF THE FIRST PASS. The first pass costs no tokens and
+        # answers a different question: did the data layer already disagree with
+        # itself, or did synthesis introduce it? Both results are persisted
+        # (`data_reconciliation` and `data_reconciliation_data_layer`), so that
+        # question is answerable from the record rather than from a log line.
         run_reconciliation = _reconcile(
             {**prior, self.report_writer.name: draft_report}, case_context, "full_run"
         )
         context["reconciliation"] = run_reconciliation
+        # `data_reconciliation` keeps its name and now carries the superset —
+        # the whole run, which is also what the Chair was shown.
         reconciliation = run_reconciliation
 
         # Where the finding goes, and why it goes there.
@@ -921,6 +923,7 @@ class Orchestrator:
             "status": "completed",
             "case_time": case_context.get("case_time"),
             "data_reconciliation": reconciliation,
+            "data_reconciliation_data_layer": data_layer_reconciliation,
             "gate_result": {"passed": True, "warnings": gate.warnings, "checks": gate.checks},
             "agent_results": {name: self._ser(result) for name, result in agent_results.items()},
             "scores": scores,

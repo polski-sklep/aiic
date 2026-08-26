@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -489,9 +488,9 @@ def _relative_divergence(a: float, b: float) -> float:
 #: calibrated against a contradiction that turned out not to exist: the GMX
 #: report's "$3,341,200 purchased over 30 days" is a *buyback*, and reading it
 #: as a 30-day trading volume was an extraction defect, now fixed in
-#: ``_binding_is_sound``. With that gone, the corpus says plainly that magnitude
-#: does not separate signal from noise — it ranks them backwards. Measured over
-#: all 16 persisted evaluations:
+#: ``consistency.binding_is_sound``. With that gone, the corpus says plainly
+#: that magnitude does not separate signal from noise — it ranks them
+#: backwards. Measured over all 16 persisted evaluations:
 #:
 #:     50.0x  GMX 24h volume: ~$3M (token, across CEX/DEX) vs ~$150M (V2 perps)
 #:             -> two different quantities. FALSE.
@@ -534,53 +533,12 @@ _MIN_PROSE_CHARS = 20
 #: Agents named per camp before the rest are summarised as a count.
 _MAX_RENDERED_AGENTS = 4
 
-#: A metric phrase *preceding* its value may not be reached across one of
-#: these. See `_binding_is_sound`.
-_BACKWARD_CLAUSE_BREAK = re.compile(r"[,;]|[—–]|\s-\s")
-
-#: Text ending in a quantity: a number, optionally a magnitude suffix, and at
-#: most one trailing word. "Buybacks: 103,764 GMX" ends in one; "small market
-#: cap" and "GMX V2 Perps TVL" do not. The one-word limit is what keeps "V2" in
-#: "GMX V2 Perps TVL" from making that phrase look like a quantity.
-_TRAILING_QUANTITY = re.compile(
-    r"\d[\d,.]*\s*(?:[KkMmBbTt]\b)?\s*(?:[A-Za-z][A-Za-z0-9.]{0,14})?$"
-)
-
-#: "…% of <metric>" — the metric is a denominator here, not a label. Anchored at
-#: the end so it tests the text immediately before the metric phrase.
-_DENOMINATOR_PREFIX = re.compile(r"%\s*(?:of|de)\s+$|\bof\s+$", re.I)
-
-#: Quantities this corpus states in dollars that the cross-report audit does
-#: not track. A figure closer to one of these than to its own metric label is
-#: governed by it.
-#:
-#: PRECISION-ONLY KNOB. Every term here can only *remove* claims, never create
-#: or misattribute one — the exact mirror of ``SEED_ENTITY_ALIASES``, which can
-#: only add them. Widening it is therefore always safe and never urgent.
-#:
-#: Each entry is a phrase found in the live corpus, not a guess:
-#:   buyback/purchased  "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
-#:   supply/vesting     "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting"
-#:   unlock             "~14.175M HYPE tokens unlock August 29, 2026"
-#:   staked/staking     "staking ~$45M", "sGMX on Arbitrum shows 7,424,699 staked"
-#:   treasury           "beyond DeFiLlama's $25.72M snapshot"
-#:   fees/revenue       "Annualized fees are ~$31.92M ... revenue ~$11.8-13.1M"
-#:   float              "~4.5% of float"
-#:   price/ATH/ATL      "trading at $7.20", "92.1% below the $91.07 ATH"
-#:   inflows            "record ETF inflows"
-_FOREIGN_QUANTITY = re.compile(
-    r"\b(?:"
-    r"buy[- ]?backs?|repurchas\w*|purchas\w*|bought|acquired|"
-    r"unlock\w*|vest\w*|emission\w*|"
-    r"stak\w*|burn\w*|"
-    r"treasury|reserves?|"
-    r"revenues?|fees?|"
-    r"float|circulating|supply|"
-    r"inflows?|outflows?|deposits?|withdrawals?|collateral|liquidations?|"
-    r"prices?|ATH|ATL|trading\s+at"
-    r")\b",
-    re.I,
-)
+#: The binding rules that decide whether the metric label the extractor chose
+#: actually governs a figure live in ``knowledge/consistency`` alongside the
+#: extractor they correct — they were written here, against this corpus, and
+#: moved so the two checks cannot drift apart. ``reject_backward_reach`` is the
+#: one place the two callers differ; see `binding_is_sound` for the measurement
+#: behind that split.
 
 
 class _RunClaim:
@@ -761,7 +719,7 @@ def _run_claims(
     agent_outputs: Mapping[str, Any], case_context: Mapping[str, Any]
 ) -> list[_RunClaim]:
     """Every comparable claim in one run's prose, keyed by agent and path."""
-    from app.knowledge.consistency import extract_claims
+    from app.knowledge.consistency import binding_is_sound, extract_claims
 
     aliases = _run_aliases(case_context)
     project = str(case_context.get("project_name") or "unknown")
@@ -782,7 +740,7 @@ def _run_claims(
                 report_date=report_date,
                 aliases=aliases,
             ):
-                if _binding_is_sound(claim):
+                if binding_is_sound(claim, reject_backward_reach=True):
                     out.append(_RunClaim(claim, agent_name, path))
     return out
 
@@ -795,191 +753,6 @@ def _case_datetime(case_context: Mapping[str, Any]) -> datetime:
     except ValueError:
         return datetime.now(timezone.utc)
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-def _binding_is_sound(claim: Any) -> bool:
-    """Whether the metric label the extractor chose actually governs this figure.
-
-    ``consistency._classify_metric`` binds a metric phrase to a value by
-    adjacency: within 30 characters, no digit in the gap, either direction. That
-    is right most of the time and wrong in three ways this corpus produces
-    constantly. Each rule below removes one of them, and each was written after
-    reading the sentence it fires on.
-
-    **1. A parenthetical that restates a preceding quantity.** This is the one
-    that matters, and it is the defect that made the first version of this
-    module report a contradiction that does not exist::
-
-        "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
-
-    $3,341,200 is 103,764 GMX priced in dollars — a *buyback*, restated in the
-    bracket. "over 30 days" is thirteen characters away with no digit between,
-    so the extractor read it as a 30-day trading volume and set it against the
-    same report's ~$2.8B of actual volume: an 838x "contradiction" between a
-    buyback and a volume, neither of which disagrees with anything. The same
-    shape, in the same corpus::
-
-        "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting linearly"
-
-    $19.4B is the value of the vesting tranche. The report says elsewhere, and
-    correctly, "FDV ($78B) is 4.3x market cap ($18.2B)".
-
-    The rule: a figure inside a bracket is a restatement, not an independent
-    claim, when a number precedes it *inside* that bracket, or when the text
-    immediately before the bracket ends in one. A bracket that follows a bare
-    label — "market cap ($75M)", "GMX V2 Perps TVL ($174.88M)", "FDV ($78B)" —
-    is the ordinary way this corpus states a figure and is untouched, which is
-    why the test is about the preceding *quantity* and not about the bracket.
-
-    **2. A nearer term naming a different quantity.** If some other metric's
-    phrase, or a quantity this audit does not track at all, sits closer to the
-    figure than the label that classified it, the closer one governs. The rival
-    metric phrases are derived from ``CANONICAL_METRICS``; the untracked
-    quantities are ``_FOREIGN_QUANTITY``.
-
-    **3. A label reaching backwards across a clause break.**::
-
-        "GMX is in a daily uptrend, trading at $7.20 — above all three EMAs"
-
-    "daily" labels the uptrend. Forward binding is safe — English writes "$6.66B
-    TVL", "GMX's ~$2.8B 30-day volume" — so this applies in one direction only.
-
-    A claim whose label cannot be re-derived from ``claim.quote`` at all is
-    kept: that is the signature of the extractor's continuation rule ("up from
-    36.4% in January 2026"), where the metric was stated several clauses back.
-
-    All of this is a post-filter rather than an edit to ``_classify_metric``,
-    which belongs to the cross-report audit and whose recall trade-offs are not
-    this one's. See the module note for the exact change that module needs if
-    these rules are ever adopted there.
-    """
-    located = _locate_value(claim)
-    if located is None:
-        return True
-    quote, start, end = located
-
-    if _restates_a_preceding_quantity(quote, start):
-        return False
-
-    own, denominators = _own_metric_bindings(quote, start, end, claim)
-    if not own:
-        # No re-derivable label. Normally that means the extractor's
-        # continuation rule supplied one from several clauses back, which this
-        # function cannot judge and must not veto. But if the only phrase in
-        # reach was a denominator reference, the label is accounted for and it
-        # does not govern this figure.
-        return not denominators
-
-    rivals = [d for d in (_nearest_rival(quote, start, end, claim.metric),) if d is not None]
-    rivals += denominators
-    if rivals and min(rivals) < min(distance for distance, _ in own):
-        return False
-
-    return any(not crosses_break for _distance, crosses_break in own)
-
-
-def _locate_value(claim: Any) -> tuple[str, int, int] | None:
-    """``(quote, start, end)`` for the literal this claim was parsed from."""
-    quote, raw = claim.quote, claim.raw
-    start = quote.find(raw)
-    if start < 0:
-        return None
-    return quote, start, start + len(raw)
-
-
-def _restates_a_preceding_quantity(quote: str, start: int) -> bool:
-    """Whether the figure at ``start`` sits in a bracket restating a quantity."""
-    from app.knowledge.consistency import _ANY_NUMBER
-
-    opened = max(quote.rfind("(", 0, start), quote.rfind("[", 0, start))
-    if opened < 0:
-        return False
-    # A bracket that closed before the figure is not the figure's bracket.
-    closed = min(
-        (index for index in (quote.find(")", opened), quote.find("]", opened)) if index >= 0),
-        default=-1,
-    )
-    if 0 <= closed < start:
-        return False
-    if _ANY_NUMBER.search(quote[opened + 1:start]):
-        return True
-    return bool(_TRAILING_QUANTITY.search(quote[:opened].rstrip()))
-
-
-def _own_metric_bindings(
-    quote: str, start: int, end: int, claim: Any
-) -> tuple[list[tuple[int, bool]], list[int]]:
-    """How this claim's own label could reach the figure.
-
-    Returns ``(bindings, denominator_distances)``. A binding is
-    ``(distance, crosses_backward_break)``. A *denominator* is a phrase that
-    names the metric only as the thing a percentage is taken of::
-
-        "~14.175M HYPE unlock ... representing ~2.7% of market cap (~$1.16B)"
-
-    $1.16B is 2.7% of the market cap, not the market cap. The surface form is
-    identical to the legitimate "small market cap ($75M)", so the bracket rule
-    cannot separate them; the "of" is the entire signal. This is the false
-    positive ``consistency._classify_metric``'s docstring records — "~3.2% of
-    MCap" put Hyperliquid's market cap at $589M — surviving in the one shape
-    its no-digit-in-the-gap rule does not cover, because here the digits sit
-    before the label rather than between the label and the figure.
-
-    Percentage metrics are exempt: "share of on-chain perp volume" is a metric
-    name that contains "of", and treating that as a denominator would delete
-    every market-share claim in the corpus.
-    """
-    from app.knowledge.consistency import _ANY_NUMBER, _METRIC_RES, _METRIC_WINDOW
-
-    found: list[tuple[int, bool]] = []
-    denominators: list[int] = []
-    for key, unit, regex in _METRIC_RES:
-        if key != claim.metric or unit != claim.unit:
-            continue
-        for match in regex.finditer(quote):
-            if unit == "usd" and _DENOMINATOR_PREFIX.search(quote[:match.start()]):
-                distance = (
-                    start - match.end() if match.end() <= start else match.start() - end
-                )
-                if 0 <= distance <= _METRIC_WINDOW:
-                    denominators.append(distance)
-                continue
-            if match.start() < end and match.end() > start:
-                found.append((0, False))  # the figure sits inside the phrase
-            elif match.end() <= start:
-                gap = quote[match.end():start]
-                if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
-                    continue
-                found.append((start - match.end(), bool(_BACKWARD_CLAUSE_BREAK.search(gap))))
-            else:
-                gap = quote[end:match.start()]
-                if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
-                    continue
-                found.append((match.start() - end, False))
-    return found, denominators
-
-
-def _nearest_rival(quote: str, start: int, end: int, metric: str) -> int | None:
-    """Distance to the nearest term naming a quantity that is not ``metric``."""
-    from app.knowledge.consistency import _ANY_NUMBER, _METRIC_RES, _METRIC_WINDOW
-
-    candidates = [(key, regex) for key, _unit, regex in _METRIC_RES if key != metric]
-    candidates.append(("_foreign", _FOREIGN_QUANTITY))
-
-    best: int | None = None
-    for _key, regex in candidates:
-        for match in regex.finditer(quote):
-            if match.start() < end and match.end() > start:
-                continue
-            if match.end() <= start:
-                gap, distance = quote[match.end():start], start - match.end()
-            else:
-                gap, distance = quote[end:match.start()], match.start() - end
-            if distance > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
-                continue
-            if best is None or distance < best:
-                best = distance
-    return best
 
 
 def _detect_contradictions(

@@ -9,6 +9,7 @@ is still present.
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from app.agents.reconciliation import (
     INTRA_RUN_RENDER_BUDGET,
@@ -163,7 +164,7 @@ class CaseContextTest(unittest.TestCase):
 # over 30 days" being a 30-day trading volume in conflict with the same report's
 # ~$2.8B. It is a buyback. $3.34M of buybacks and $2.8B of volume disagree about
 # nothing, and every test that asserted the catch was asserting an extraction
-# defect. The defect is fixed in `_binding_is_sound` and pinned below in
+# defect. The defect is fixed in `consistency.binding_is_sound` and pinned below in
 # MisbindingRegressionTest, which now asserts the opposite of what those tests
 # asserted.
 #
@@ -524,6 +525,42 @@ class IntraRunSafetyTest(unittest.TestCase):
         self.assertEqual(out["inconsistencies_found"], 1)
         self.assertTrue(out["status"].startswith("WARNING"))
 
+class SharedBindingRulesTest(unittest.TestCase):
+    """The binding rules now live in `knowledge/consistency` and are imported.
+
+    Two copies of a binding rule that drift apart is the failure this project
+    keeps hitting, so there must be exactly one definition and this module must
+    be using it.
+    """
+
+    def test_this_module_defines_no_binding_rules_of_its_own(self):
+        from app.agents import reconciliation
+
+        for name in (
+            "_binding_is_sound", "_TRAILING_QUANTITY", "_DENOMINATOR_PREFIX",
+            "_FOREIGN_QUANTITY", "_BACKWARD_CLAUSE_BREAK", "_locate_value",
+            "_restates_a_preceding_quantity", "_own_metric_bindings", "_nearest_rival",
+        ):
+            self.assertFalse(
+                hasattr(reconciliation, name),
+                f"{name} is defined here as well as in knowledge/consistency",
+            )
+
+    def test_the_within_run_check_keeps_the_backward_reach_rule(self):
+        """"trading at $7.20" is removed by the foreign-quantity rule, but the
+        backward-reach rule is what this module measured and must keep asking
+        for. The cross-report sweep deliberately does not."""
+        from app.knowledge.consistency import binding_is_sound, extract_claims
+
+        claims = extract_claims(
+            "On market cap, Hyperliquid is ~$18.3B vs GMX $75M.",
+            evaluation_id="e", report_project="GMX", section="s",
+            report_date=datetime(2026, 8, 25, tzinfo=timezone.utc),
+        )
+        subject = [c for c in claims if c.raw == "~$18.3B"]
+        self.assertEqual(len(subject), 1, "the sweep should keep this true claim")
+        self.assertFalse(binding_is_sound(subject[0], reject_backward_reach=True))
+        self.assertTrue(binding_is_sound(subject[0]))
 
 if __name__ == "__main__":
     unittest.main()

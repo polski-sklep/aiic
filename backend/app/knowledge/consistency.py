@@ -675,6 +675,289 @@ def _classify_metric(sentence: str, value_start: int, value_end: int, unit: str)
     return best[1] if best else None
 
 
+# ---------------------------------------------------------------------------
+# Layer 1b — is the label the one that actually governs this figure?
+# ---------------------------------------------------------------------------
+#
+# `_classify_metric` binds by adjacency: within `_METRIC_WINDOW`, no digit in
+# the gap, either direction. That protects the metric -> number direction — a
+# label may not reach across a clause break to a distant figure — but nothing
+# protected a number that has its own nearer, *different* governing noun:
+#
+#     "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
+#
+# "over 30 days" is thirteen characters from $3,341,200 with no digit between,
+# so adjacency binds it to `volume_30d_usd`. The word "Buybacks:" sitting
+# immediately in front of the number was never consulted. That mis-binding was
+# read as an 840x contradiction against the same report's ~$2.8B of real
+# volume, and a whole module was commissioned against a contradiction that does
+# not exist (PROJECT_DECISIONS D15).
+#
+# The rules below were written and measured on `agents/reconciliation`, which
+# hit the defect first. They live HERE because `reconciliation` already imports
+# this module and the reverse would be circular — and because two copies of a
+# binding rule that drift apart is precisely the failure both modules exist to
+# catch. `reconciliation` imports them.
+#
+# All three are post-filters over a finished `Claim`, not edits to
+# `_classify_metric`: each needs the literal corpus text around the figure,
+# which only the finished claim carries (`quote` plus `raw`).
+
+#: A metric phrase *preceding* its value may not be reached across one of
+#: these. See `binding_is_sound`.
+BACKWARD_CLAUSE_BREAK = re.compile(r"[,;]|[—–]|\s-\s")
+
+#: Text ending in a quantity: a number, optionally a magnitude suffix, and at
+#: most one trailing word. "Buybacks: 103,764 GMX" ends in one; "small market
+#: cap" and "GMX V2 Perps TVL" do not. The one-word limit is what keeps "V2" in
+#: "GMX V2 Perps TVL" from making that phrase look like a quantity.
+TRAILING_QUANTITY = re.compile(
+    r"\d[\d,.]*\s*(?:[KkMmBbTt]\b)?\s*(?:[A-Za-z][A-Za-z0-9.]{0,14})?$"
+)
+
+#: "…% of <metric>" — the metric is a denominator here, not a label. Anchored at
+#: the end so it tests the text immediately before the metric phrase.
+DENOMINATOR_PREFIX = re.compile(r"%\s*(?:of|de)\s+$|\bof\s+$", re.I)
+
+#: Quantities this corpus states in dollars that neither check tracks. A figure
+#: closer to one of these than to its own metric label is governed by it.
+#:
+#: PRECISION-ONLY KNOB. Every term here can only *remove* claims, never create
+#: or misattribute one — the exact mirror of ``SEED_ENTITY_ALIASES``, which can
+#: only add them. Widening it is therefore always safe and never urgent.
+#:
+#: Each entry is a phrase found in the live corpus, not a guess:
+#:   buyback/purchased  "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
+#:   supply/vesting     "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting"
+#:   unlock             "~14.175M HYPE tokens unlock August 29, 2026"
+#:   staked/staking     "staking ~$45M", "sGMX on Arbitrum shows 7,424,699 staked"
+#:   treasury           "beyond DeFiLlama's $25.72M snapshot"
+#:   fees/revenue       "Annualized fees are ~$31.92M ... revenue ~$11.8-13.1M"
+#:   float              "~4.5% of float"
+#:   price/ATH/ATL      "trading at $7.20", "92.1% below the $91.07 ATH"
+#:   inflows            "record ETF inflows"
+FOREIGN_QUANTITY = re.compile(
+    r"\b(?:"
+    r"buy[- ]?backs?|repurchas\w*|purchas\w*|bought|acquired|"
+    r"unlock\w*|vest\w*|emission\w*|"
+    r"stak\w*|burn\w*|"
+    r"treasury|reserves?|"
+    r"revenues?|fees?|"
+    r"float|circulating|supply|"
+    r"inflows?|outflows?|deposits?|withdrawals?|collateral|liquidations?|"
+    r"prices?|ATH|ATL|trading\s+at"
+    r")\b",
+    re.I,
+)
+
+
+def binding_is_sound(claim: Any, *, reject_backward_reach: bool = False) -> bool:
+    """Whether the metric label the extractor chose actually governs this figure.
+
+    Three rules, each removing one way adjacency goes wrong, and each written
+    after reading the sentence it fires on.
+
+    **1. A parenthetical that restates a preceding quantity.**::
+
+        "Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days"
+
+    $3,341,200 is 103,764 GMX priced in dollars — a *buyback*, restated in the
+    bracket. The same shape, in the same corpus::
+
+        "23.8% of total supply (238M HYPE, ~$19.4B FDV) vesting linearly"
+
+    $19.4B is the value of the vesting tranche; the report says elsewhere, and
+    correctly, "FDV ($78B) is 4.3x market cap ($18.2B)".
+
+    The rule: a figure inside a bracket is a restatement, not an independent
+    claim, when a number precedes it *inside* that bracket, or when the text
+    immediately before the bracket ends in one. A bracket that follows a bare
+    label — "market cap ($75M)", "FDV ($78B)" — is the ordinary way this corpus
+    states a figure and is untouched, which is why the test is about the
+    preceding *quantity* and not about the bracket.
+
+    **2. A nearer term naming a different quantity.** If some other metric's
+    phrase, or a quantity neither check tracks at all, sits closer to the figure
+    than the label that classified it, the closer one governs. The rival metric
+    phrases come from ``CANONICAL_METRICS``; the untracked ones from
+    ``FOREIGN_QUANTITY``.
+
+    **3. "…% of <metric>" is a denominator, not a label.**::
+
+        "~14.175M HYPE unlock ... representing ~2.7% of market cap (~$1.16B)"
+
+    $1.16B is 2.7% of the market cap, not the market cap. This is the false
+    positive `_classify_metric`'s own docstring records — "~3.2% of MCap" put
+    Hyperliquid's market cap at $589M — surviving in the one shape its
+    no-digit-in-the-gap rule cannot see, because here the digits sit *before*
+    the label rather than between the label and the figure.
+
+    ``reject_backward_reach`` is a fourth rule, and the ONE PLACE THE TWO
+    CALLERS DIFFER. It vetoes a label that reaches backwards across a clause
+    break::
+
+        "GMX is in a daily uptrend, trading at $7.20 — above all three EMAs"
+
+    ``agents/reconciliation`` enables it. The cross-report sweep does NOT.
+
+    MEASURED, 26 Aug 2026, over the live corpus — 11 reports for the sweep, 161
+    pre-filter claims across 16 evaluations x 15 agents for the within-run
+    check. Firings per rule:
+
+                                       sweep    within-run
+        rule 1  bracket restates          3         13
+        rule 2  nearer rival              0          2
+        rule 3  denominator               0          1
+        rule 4  backward reach            1          1
+
+    Rule 4 fires once on each corpus, and both times on the same sentence:
+
+        "On market cap, Hyperliquid is ~$18.3B vs GMX $75M"
+
+    That claim is TRUE and correctly bound — it is the exact adjacency
+    ``_METRIC_WINDOW``'s own docstring cites as legitimate. Rule 4 therefore has
+    **no measured true positive on either corpus**, and the sentence it was
+    written for, "trading at $7.20", is already removed by rule 2 via
+    ``FOREIGN_QUANTITY``.
+
+    It stays on for ``agents/reconciliation`` because that module's behaviour is
+    pinned to a measured baseline (GMX 8e4b3c83: 0 contradictions, 6
+    uncorroborated; Aave c1479a94: 1 contradiction, $25.7B vs $61.9B) and is not
+    this branch's to move — and because within one run recall is cheap, fifteen
+    agents restate the same facts and D15 gates a finding on two of them
+    agreeing. Across months each report speaks once, so deleting a true
+    market-cap claim costs the only evidence of drift there is. If rule 4 is
+    ever revisited, the evidence above says to delete it, not to extend it.
+
+    Rules 2 and 3 do not fire on the sweep corpus at all. They are kept because
+    the two callers must share one definition — the drift between two copies is
+    the failure this project keeps hitting — and because both are
+    precision-only: on the within-run corpus they remove "~2.7% of market cap
+    (~$1.16B)" read as a $1.16B market cap, and "trading at $7.20" read as a
+    24-hour volume. Neither can create or misattribute a claim.
+
+    A claim whose label cannot be re-derived from ``claim.quote`` at all is
+    kept: that is the signature of the extractor's continuation rule ("up from
+    36.4% in January 2026"), where the metric was stated several clauses back.
+
+    NEVER RAISES. Anything unparseable returns True — the conservative
+    direction, since this function can only remove claims. The sweep must not
+    be able to fail an audit run.
+    """
+    located = _locate_value(claim)
+    if located is None:
+        return True
+    quote, start, end = located
+
+    if _restates_a_preceding_quantity(quote, start):
+        return False
+
+    own, denominators = _own_metric_bindings(quote, start, end, claim)
+    if not own:
+        # No re-derivable label. Normally that means the extractor's
+        # continuation rule supplied one from several clauses back, which this
+        # function cannot judge and must not veto. But if the only phrase in
+        # reach was a denominator reference, the label is accounted for and it
+        # does not govern this figure.
+        return not denominators
+
+    rivals = [d for d in (_nearest_rival(quote, start, end, claim.metric),) if d is not None]
+    rivals += denominators
+    if rivals and min(rivals) < min(distance for distance, _ in own):
+        return False
+
+    if reject_backward_reach:
+        return any(not crosses_break for _distance, crosses_break in own)
+    return True
+
+
+def _locate_value(claim: Any) -> tuple[str, int, int] | None:
+    """``(quote, start, end)`` for the literal this claim was parsed from."""
+    quote, raw = claim.quote, claim.raw
+    start = quote.find(raw)
+    if start < 0:
+        return None
+    return quote, start, start + len(raw)
+
+
+def _restates_a_preceding_quantity(quote: str, start: int) -> bool:
+    """Whether the figure at ``start`` sits in a bracket restating a quantity."""
+    opened = max(quote.rfind("(", 0, start), quote.rfind("[", 0, start))
+    if opened < 0:
+        return False
+    # A bracket that closed before the figure is not the figure's bracket.
+    closed = min(
+        (index for index in (quote.find(")", opened), quote.find("]", opened)) if index >= 0),
+        default=-1,
+    )
+    if 0 <= closed < start:
+        return False
+    if _ANY_NUMBER.search(quote[opened + 1:start]):
+        return True
+    return bool(TRAILING_QUANTITY.search(quote[:opened].rstrip()))
+
+
+def _own_metric_bindings(
+    quote: str, start: int, end: int, claim: Any
+) -> tuple[list[tuple[int, bool]], list[int]]:
+    """How this claim's own label could reach the figure.
+
+    Returns ``(bindings, denominator_distances)``. A binding is
+    ``(distance, crosses_backward_break)``.
+
+    Percentage metrics are exempt from the denominator rule: "share of on-chain
+    perp volume" is a metric name that contains "of", and treating that as a
+    denominator would delete every market-share claim in the corpus.
+    """
+    found: list[tuple[int, bool]] = []
+    denominators: list[int] = []
+    for key, unit, regex in _METRIC_RES:
+        if key != claim.metric or unit != claim.unit:
+            continue
+        for match in regex.finditer(quote):
+            if unit == "usd" and DENOMINATOR_PREFIX.search(quote[:match.start()]):
+                distance = (
+                    start - match.end() if match.end() <= start else match.start() - end
+                )
+                if 0 <= distance <= _METRIC_WINDOW:
+                    denominators.append(distance)
+                continue
+            if match.start() < end and match.end() > start:
+                found.append((0, False))  # the figure sits inside the phrase
+            elif match.end() <= start:
+                gap = quote[match.end():start]
+                if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
+                    continue
+                found.append((start - match.end(), bool(BACKWARD_CLAUSE_BREAK.search(gap))))
+            else:
+                gap = quote[end:match.start()]
+                if len(gap) > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
+                    continue
+                found.append((match.start() - end, False))
+    return found, denominators
+
+
+def _nearest_rival(quote: str, start: int, end: int, metric: str) -> int | None:
+    """Distance to the nearest term naming a quantity that is not ``metric``."""
+    candidates = [(key, regex) for key, _unit, regex in _METRIC_RES if key != metric]
+    candidates.append(("_foreign", FOREIGN_QUANTITY))
+
+    best: int | None = None
+    for _key, regex in candidates:
+        for match in regex.finditer(quote):
+            if match.start() < end and match.end() > start:
+                continue
+            if match.end() <= start:
+                gap, distance = quote[match.end():start], start - match.end()
+            else:
+                gap, distance = quote[end:match.start()], match.start() - end
+            if distance > _METRIC_WINDOW or _ANY_NUMBER.search(gap):
+                continue
+            if best is None or distance < best:
+                best = distance
+    return best
+
+
 def extract_claims(
     text: str,
     *,
@@ -686,10 +969,11 @@ def extract_claims(
 ) -> list[Claim]:
     """Pull ``(entity, metric, value, period)`` tuples out of one prose section.
 
-    Conservative by construction. A number survives only if all four of these
+    Conservative by construction. A number survives only if all five of these
     resolve: a known entity before it in the same sentence, a metric phrase near
-    it with a matching unit, a parseable value, and a period. Anything else is
-    discarded silently. The corpus contains 842 numeric tokens and the vast
+    it with a matching unit, a parseable value, a period, and — see
+    `binding_is_sound` — no nearer noun governing the figure instead. Anything
+    else is discarded silently. The corpus contains 842 numeric tokens and the vast
     majority of them are not comparable facts about a named entity — a sweep
     that flagged them all would be noise, so the extractor's job is as much
     about what it refuses as what it returns.
@@ -744,7 +1028,13 @@ def extract_claims(
                     report_date=report_date.date().isoformat(),
                 )
             )
-        claims.extend(_drop_comparatives(here))
+        # `binding_is_sound` LAST, after `_drop_comparatives`, because
+        # `agents/reconciliation` applies it in exactly that position on the
+        # value this function returns. Filtering earlier would change which
+        # claims `_drop_comparatives` sees and move that module's measured
+        # behaviour; filtering here leaves it byte-identical, since the sweep's
+        # rule set is a strict subset of reconciliation's.
+        claims.extend(c for c in _drop_comparatives(here) if binding_is_sound(c))
     return claims
 
 

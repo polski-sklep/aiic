@@ -102,6 +102,91 @@ class DateAttributionPeriodTest(unittest.TestCase):
         self.assertEqual(value_finding.period, "2026-03")
 
 
+class SweepBindingTest(unittest.TestCase):
+    """The extractor must consult the noun governing a figure, not only the
+    metric phrase nearest to it. Fixtures are verbatim corpus text."""
+
+    def _metrics(self, text, entity="GMX", project="GMX"):
+        return {
+            (c.entity, c.metric, c.raw)
+            for c in extract_claims(
+                text, evaluation_id="e1", report_project=project,
+                section="5_on_chain_metrics", report_date=AUG,
+            )
+        }
+
+    def test_a_buyback_is_not_a_thirty_day_volume(self):
+        """GMX 8e4b3c83, section 5_on_chain_metrics, verbatim.
+
+        The mis-binding that was read as an 840x contradiction and cost a whole
+        module. "over 30 days" is thirteen characters away with no digit in the
+        gap, so adjacency alone binds it; "Buybacks:" is never consulted.
+        """
+        found = self._metrics("Buybacks: 103,764 GMX ($3,341,200) purchased over 30 days;")
+        self.assertNotIn(("GMX", "volume_30d_usd", "$3,341,200"), found)
+        self.assertEqual(found, set())
+
+    def test_the_real_thirty_day_volume_beside_it_still_binds(self):
+        """Dropping the buyback must not cost the volume claim in the same run."""
+        found = self._metrics(
+            "Hyperliquid commands 70-80%+ of on-chain perp volume with ~$6.66B TVL "
+            "and processes ~$245B over 30 days, versus GMX's ~$2.8B 30-day volume."
+        )
+        self.assertIn(("GMX", "volume_30d_usd", "~$2.8B"), found)
+        self.assertIn(("Hyperliquid", "volume_30d_usd", "~$245B"), found)
+
+    def test_a_percentage_of_a_metric_is_a_denominator(self):
+        """"~2.7% of market cap (~$1.16B)" — the false positive this module's own
+        docstring records, in the one shape its no-digit rule cannot see."""
+        found = self._metrics(
+            "NEXT UNLOCK: ~14.175M HYPE tokens unlock August 29, 2026, representing "
+            "1.4% of total supply and ~2.7% of market cap (~$1.16B).",
+            project="Hyperliquid",
+        )
+        self.assertNotIn(("Hyperliquid", "market_cap_usd", "~$1.16B"), found)
+
+    def test_ordinary_label_then_bracket_phrasing_still_binds(self):
+        """The corpus's normal way of stating a figure must survive the rules."""
+        self.assertIn(
+            ("GMX", "market_cap_usd", "$75M"),
+            self._metrics("GMX is trading at $7.19, a $75M market cap, 92% below its ATH."),
+        )
+        self.assertIn(
+            ("GMX", "fdv_usd", "~$75M"),
+            self._metrics("GMX is a revenue-generating protocol with a reasonable FDV "
+                          "(~$75M, 79% circulating, minimal dilution)."),
+        )
+
+    def test_the_measured_recall_cost_of_the_bracket_rule(self):
+        """A cost this branch measured and accepted, pinned so it stays visible.
+
+        Hyperliquid be8210d4, section 7, verbatim. "$15B+ daily at peak" really
+        is Aster's 24-hour volume, and rule 1 removes it because "~20.9%" sits
+        in front of it inside the same bracket. Two things make the loss
+        tolerable: the figure is peak-qualified, which the sweep has no way to
+        tell apart from a current one and would eventually read as drift; and
+        Aster is named once in eleven reports, so the claim is in no finding.
+        If a later change makes this claim survive, that is an improvement —
+        but it must be a deliberate one, not a silent one.
+        """
+        found = self._metrics(
+            "Named rivals with numbers: Aster (~20.9% share, $15B+ daily at peak);",
+            project="Hyperliquid",
+        )
+        self.assertNotIn(("Aster", "volume_24h_usd", "$15B+"), found)
+
+    def test_a_label_reaching_backwards_over_a_comma_still_binds_here(self):
+        """The cross-report sweep deliberately does NOT take reconciliation's
+        backward-clause-break rule. "On market cap, Hyperliquid is ~$18.3B" is
+        the exact adjacency `_METRIC_WINDOW`'s docstring cites as legitimate,
+        and it is a true claim in the live GMX report."""
+        self.assertIn(
+            ("Hyperliquid", "market_cap_usd", "~$18.3B"),
+            self._metrics("On market cap, Hyperliquid is ~$18.3B vs GMX $75M.",
+                          project="GMX"),
+        )
+
+
 class SweepSafetyTest(unittest.TestCase):
     def test_an_empty_corpus_yields_no_conflicts_and_no_crash(self):
         self.assertEqual(detect_conflicts([]), [])

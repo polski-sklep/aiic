@@ -1183,6 +1183,14 @@ class Orchestrator:
             "model_used": result.model_used,
             "tokens_input": result.tokens_input,
             "tokens_output": result.tokens_output,
+            # Since prompt caching landed, `tokens_input` is the uncached
+            # remainder only (see AgentResult's note). Dropping these two here
+            # made the real prompt size unrecoverable downstream: the Dolphin
+            # run of 2026-08-27 persisted 126 input tokens across 15 agents
+            # against ~1.16M tokens of actual prompt. Anything pricing a run
+            # needs all three streams — app/llm/pricing.py.
+            "cache_write_tokens": result.cache_write_tokens,
+            "cache_read_tokens": result.cache_read_tokens,
             "latency_ms": result.latency_ms,
             "error": result.error,
             "tool_calls_made": result.tool_calls_made,

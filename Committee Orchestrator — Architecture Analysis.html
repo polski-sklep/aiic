@@ -1,0 +1,662 @@
+<title>Committee Orchestrator Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --paper:#EDEFF2; --surface:#FFFFFF; --sunk:#E4E8ED;
+  --ink:#12151C; --ink-2:#3D4655; --ink-3:#6B7688; --rule:#CFD6DE;
+  --brass:#8F6A16; --teal:#2F6462; --veto:#8E2B31;
+  --wash-b:#F2EAD6; --wash-t:#DEEAE9; --wash-v:#F6DFE0;
+  --shadow:0 1px 2px rgba(18,21,28,.05),0 8px 24px -14px rgba(18,21,28,.2);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#101319; --surface:#181C25; --sunk:#1E232D;
+    --ink:#E7EBF1; --ink-2:#AEB8C7; --ink-3:#7E8899; --rule:#2C333F;
+    --brass:#D2A648; --teal:#6FB0AC; --veto:#DE868B;
+    --wash-b:#2A2213; --wash-t:#16292A; --wash-v:#2C1A1C;
+    --shadow:0 1px 2px rgba(0,0,0,.45),0 8px 24px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#101319; --surface:#181C25; --sunk:#1E232D;
+  --ink:#E7EBF1; --ink-2:#AEB8C7; --ink-3:#7E8899; --rule:#2C333F;
+  --brass:#D2A648; --teal:#6FB0AC; --veto:#DE868B;
+  --wash-b:#2A2213; --wash-t:#16292A; --wash-v:#2C1A1C;
+  --shadow:0 1px 2px rgba(0,0,0,.45),0 8px 24px -14px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  font-size:clamp(1rem,.9rem + .25vw,1.08rem);line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1140px;margin:0 auto;padding:0 clamp(1rem,4vw,3rem)}
+h1,h2,h3{font-family:Newsreader,Georgia,serif;font-weight:600;text-wrap:balance;margin:0;line-height:1.14}
+h1{font-size:clamp(2.4rem,1.6rem + 3.2vw,4rem);letter-spacing:-.015em}
+h2{font-size:clamp(1.6rem,1.2rem + 1.4vw,2.3rem);letter-spacing:-.01em}
+p{margin:0}
+code{font-family:"IBM Plex Mono",monospace;font-size:.88em}
+
+.eyebrow{
+  font-family:"IBM Plex Mono",monospace;font-size:.7rem;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
+}
+
+/* masthead */
+header.top{border-bottom:1px solid var(--rule);background:var(--surface)}
+.masthead{display:flex;flex-direction:column;gap:1.4rem;padding:clamp(2.5rem,6vw,4.5rem) 0 clamp(2rem,4vw,3rem)}
+.lede{font-family:Newsreader,Georgia,serif;font-size:clamp(1.1rem,.95rem + .7vw,1.42rem);color:var(--ink-2);max-width:60ch;line-height:1.5}
+.facts{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--rule);padding-top:1.25rem}
+.fact{display:flex;flex-direction:column;gap:.15rem;padding-right:2.5rem;margin-right:2.5rem;border-right:1px solid var(--rule)}
+.fact:last-child{border-right:none;padding-right:0;margin-right:0}
+.fact b{font-family:"IBM Plex Mono",monospace;font-size:1.5rem;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1}
+.fact span{font-size:.76rem;color:var(--ink-3);letter-spacing:.02em}
+
+/* nav */
+nav.jump{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--rule)}
+nav.jump ol{list-style:none;margin:0;padding:0;display:flex;overflow-x:auto;
+  font-family:"IBM Plex Mono",monospace;font-size:.72rem;letter-spacing:.07em;text-transform:uppercase}
+nav.jump a{display:block;padding:.85rem 1rem;color:var(--ink-3);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}
+nav.jump a:hover,nav.jump a:focus-visible{color:var(--ink);border-bottom-color:var(--brass);outline:none}
+
+section{padding:clamp(3rem,6vw,5rem) 0;border-bottom:1px solid var(--rule)}
+.sechead{display:flex;flex-direction:column;gap:.6rem;margin-bottom:2.5rem;max-width:68ch}
+.sechead p{color:var(--ink-2)}
+
+/* flow diagram */
+.figure{background:var(--surface);border:1px solid var(--rule);border-radius:3px;box-shadow:var(--shadow);padding:1.25rem;overflow-x:auto}
+.figure svg{display:block;min-width:900px;width:100%;height:auto}
+.legend{display:flex;flex-wrap:wrap;gap:1.25rem;margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--rule);
+  font-family:"IBM Plex Mono",monospace;font-size:.72rem;color:var(--ink-3)}
+.legend i{display:inline-block;width:22px;height:0;border-top-width:2px;margin-right:.45rem;vertical-align:middle}
+.key{display:flex;align-items:center}
+
+svg .box{fill:var(--surface);stroke:var(--rule);stroke-width:1}
+svg .box-in{fill:var(--sunk);stroke:var(--rule)}
+svg .box-b{fill:var(--wash-b);stroke:var(--brass)}
+svg .box-t{fill:var(--wash-t);stroke:var(--teal)}
+svg .box-v{fill:var(--wash-v);stroke:var(--veto)}
+svg .lbl{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;fill:var(--ink)}
+svg .sub{font-family:"IBM Plex Sans",sans-serif;font-size:10px;fill:var(--ink-3)}
+svg .cap{font-family:"IBM Plex Mono",monospace;font-size:9.5px;font-weight:600;letter-spacing:.09em;fill:var(--ink-3)}
+svg .flow{stroke:var(--ink-3);stroke-width:1.4;fill:none}
+svg .flow-b{stroke:var(--brass);stroke-width:1.8;fill:none}
+svg .flow-v{stroke:var(--veto);stroke-width:1.8;fill:none;stroke-dasharray:5 3}
+svg .bar{fill:var(--sunk);stroke:var(--rule)}
+
+/* stages */
+.stage{margin-bottom:3rem}
+.stage:last-child{margin-bottom:0}
+.stage-bar{display:flex;flex-wrap:wrap;align-items:baseline;gap:.6rem 1.1rem;padding-bottom:.7rem;margin-bottom:1.4rem;border-bottom:2px solid var(--ink)}
+.stage-n{font-family:"IBM Plex Mono",monospace;font-size:.74rem;font-weight:600;color:var(--brass);letter-spacing:.1em}
+.stage-bar h3{font-size:1.4rem}
+.tags{display:flex;gap:.45rem;margin-left:auto}
+.tag{font-family:"IBM Plex Mono",monospace;font-size:.66rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:.2rem .55rem;border:1px solid currentColor;border-radius:2px}
+.tag.par{color:var(--teal)} .tag.seq{color:var(--brass)} .tag.mdl{color:var(--ink-3)}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(258px,1fr));gap:1rem}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:3px;padding:1.05rem 1.1rem;display:flex;flex-direction:column;gap:.55rem;box-shadow:var(--shadow)}
+.card.flag{border-left:3px solid var(--veto)}
+.card.mute{border-left:3px solid var(--ink-3)}
+.card-top{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem}
+.card h4{margin:0;font-family:"IBM Plex Mono",monospace;font-size:.85rem;font-weight:600}
+.wt{font-family:"IBM Plex Mono",monospace;font-size:.78rem;font-weight:600;color:var(--brass);font-variant-numeric:tabular-nums}
+.wt.none{color:var(--ink-3);font-weight:400;font-size:.7rem;letter-spacing:.06em;text-transform:uppercase}
+.card p{font-size:.85rem;color:var(--ink-2);line-height:1.5}
+.tools{font-family:"IBM Plex Mono",monospace;font-size:.69rem;color:var(--ink-3);padding-top:.5rem;border-top:1px solid var(--rule);margin-top:auto;word-break:break-word}
+.pill{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.62rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;padding:.14rem .42rem;border-radius:2px;background:var(--veto);color:var(--paper)}
+
+/* prose rows — single grid child on the right, so paragraphs never orphan */
+.rows{display:flex;flex-direction:column;border-top:1px solid var(--rule)}
+.row{display:grid;grid-template-columns:minmax(150px,.26fr) 1fr;gap:1.75rem;padding:1.4rem 0;border-bottom:1px solid var(--rule);align-items:start}
+.row > h3{font-family:"IBM Plex Mono",monospace;font-size:.84rem;font-weight:600;color:var(--ink);padding-top:.15rem}
+.row > .body{display:flex;flex-direction:column;gap:.7rem;max-width:70ch}
+.row p{color:var(--ink-2);font-size:.93rem}
+@media(max-width:680px){.row{grid-template-columns:1fr;gap:.5rem}}
+
+/* tables */
+.scroller{overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:3px;box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th{text-align:left;font-family:"IBM Plex Mono",monospace;font-size:.66rem;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-3);padding:.9rem .7rem;border-bottom:1px solid var(--rule);white-space:nowrap;vertical-align:bottom}
+td{padding:.6rem .7rem;border-bottom:1px solid var(--rule);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+td.agent{font-family:"IBM Plex Mono",monospace;font-size:.82rem;white-space:nowrap}
+td.num{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;text-align:right;width:4.5rem;font-weight:600}
+td.dot{text-align:center;width:3.1rem;color:var(--brass);font-weight:600}
+td.dot.off{color:var(--rule)}
+.barcell{width:38%;min-width:120px}
+.bar{height:7px;background:var(--brass);border-radius:1px}
+tr.tot td{font-weight:600;background:var(--sunk)}
+th.grp{border-bottom:1px solid var(--rule);color:var(--ink-3);text-align:center}
+.stagecell{font-size:.76rem;color:var(--ink-3);white-space:nowrap}
+
+.new{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:1rem}
+.newcard{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--teal);border-radius:3px;padding:1rem 1.1rem;display:flex;flex-direction:column;gap:.4rem}
+.newcard h4{margin:0;font-family:"IBM Plex Mono",monospace;font-size:.79rem;font-weight:600}
+.newcard p{font-size:.84rem;color:var(--ink-2);line-height:1.5}
+
+footer{padding:2.5rem 0 4rem;color:var(--ink-3);font-size:.78rem;font-family:"IBM Plex Mono",monospace}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="top">
+  <div class="wrap masthead">
+    <span class="eyebrow">Architecture Analysis</span>
+    <h1>Committee Orchestrator</h1>
+    <p class="lede">An AI investment committee: fifteen agents across a nine-step pipeline, producing a twenty-five section due-diligence report and a BUY / PASS / WATCH / VETO decision.</p>
+    <div class="facts">
+      <div class="fact"><b>15</b><span>agents</span></div>
+      <div class="fact"><b>8</b><span>parallel, isolated</span></div>
+      <div class="fact"><b>7</b><span>sequential</span></div>
+      <div class="fact"><b>10</b><span>carry score weight</span></div>
+      <div class="fact"><b>25</b><span>report sections</span></div>
+      <div class="fact"><b>1</b><span>unilateral veto</span></div>
+    </div>
+  </div>
+</header>
+
+<nav class="jump">
+  <div class="wrap">
+    <ol>
+      <li><a href="#flow">Information flow</a></li>
+      <li><a href="#agents">Agents</a></li>
+      <li><a href="#tools">Tools</a></li>
+      <li><a href="#weights">Scoring</a></li>
+      <li><a href="#contention">Contention</a></li>
+      <li><a href="#infra">Infrastructure</a></li>
+    </ol>
+  </div>
+</nav>
+
+<div class="wrap">
+
+<section id="flow">
+  <div class="sechead">
+    <span class="eyebrow">Step 0 through step 8</span>
+    <h2>How information moves</h2>
+    <p>Two things govern the shape of this diagram. The eight data agents run at the same time and cannot see one another. Everything after them runs in order, and each stage sees everything produced before it.</p>
+  </div>
+
+  <div class="figure">
+    <svg viewBox="0 0 980 742" role="img" aria-label="Pipeline diagram: shared inputs feed eight isolated parallel data agents, whose outputs accumulate through four sequential synthesis agents, a report writer, an independent reviewer, and the committee chair.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/>
+        </marker>
+        <marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--brass)"/>
+        </marker>
+        <marker id="arv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--veto)"/>
+        </marker>
+      </defs>
+
+      <!-- INPUTS -->
+      <text class="cap" x="14" y="16">STEP 0 · SHARED INPUTS</text>
+      <g>
+        <rect class="box box-in" x="14" y="26" width="296" height="50" rx="2"/>
+        <text class="lbl" x="28" y="47">Project resolution</text>
+        <text class="sub" x="28" y="63">ticker · CoinGecko id · category · chain</text>
+
+        <rect class="box box-in" x="326" y="26" width="296" height="50" rx="2"/>
+        <text class="lbl" x="340" y="47">Canonical facts</text>
+        <text class="sub" x="340" y="63">TVL · 30d fees · 30d revenue · as-of date</text>
+
+        <rect class="box box-in" x="638" y="26" width="328" height="50" rx="2"/>
+        <text class="lbl" x="652" y="47">Institutional memory</text>
+        <text class="sub" x="652" y="63">prior evaluation · standing contradiction warnings</text>
+      </g>
+
+      <!-- bus -->
+      <path class="flow" d="M162,76 V96 M474,76 V96 M802,76 V96"/>
+      <path class="flow" d="M60,96 H930"/>
+      <text class="cap" x="14" y="112">IDENTICAL CONTEXT TO ALL EIGHT</text>
+
+      <!-- 8 parallel agents -->
+      <text class="cap" x="14" y="140">STEP 1 · DATA GATHERING — PARALLEL, MUTUALLY BLIND</text>
+      <g>
+        <path class="flow" d="M72,96 V150 M188,96 V150 M304,96 V150 M420,96 V150 M536,96 V150 M652,96 V150 M768,96 V150 M884,96 V150" marker-end="url(#ar)"/>
+        <rect class="box box-t" x="18" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="26" y="172" font-size="9.5">tokenomics</text><text class="sub" x="26" y="187">supply, vesting</text><text class="sub" x="26" y="200">0.15</text>
+        <rect class="box box-t" x="134" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="142" y="172" font-size="9.5">tech_infra</text><text class="sub" x="142" y="187">consensus, code</text><text class="sub" x="142" y="200">0.15</text>
+        <rect class="box box-t" x="250" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="258" y="172" font-size="9.5">onchain</text><text class="sub" x="258" y="187">holders, TVL</text><text class="sub" x="258" y="200">0.12</text>
+        <rect class="box box-t" x="366" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="374" y="172" font-size="9.5">competitive</text><text class="sub" x="374" y="187">share, moat</text><text class="sub" x="374" y="200">0.10</text>
+        <rect class="box box-t" x="482" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="490" y="172" font-size="9.5">governance</text><text class="sub" x="490" y="187">DAO, treasury</text><text class="sub" x="490" y="200">0.08</text>
+        <rect class="box box-t" x="598" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="606" y="172" font-size="9.5">field_intel</text><text class="sub" x="606" y="187">sentiment</text><text class="sub" x="606" y="200">0.05</text>
+        <rect class="box box-t" x="714" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="722" y="172" font-size="9.5">legal_reg</text><text class="sub" x="722" y="187">classification</text><text class="sub" x="722" y="200">0.05</text>
+        <rect class="box" x="830" y="152" width="108" height="58" rx="2"/>
+        <text class="lbl" x="838" y="172" font-size="9.5">technical</text><text class="sub" x="838" y="187">price structure</text><text class="sub" x="838" y="200">excluded</text>
+      </g>
+
+      <!-- collector -->
+      <path class="flow" d="M72,210 V236 M188,210 V236 M304,210 V236 M420,210 V236 M536,210 V236 M652,210 V236 M768,210 V236"/>
+      <path class="flow" d="M884,210 V236"/>
+      <rect class="bar" x="14" y="236" width="952" height="26" rx="2"/>
+      <text class="cap" x="26" y="253">CONTEXT ACCUMULATES FROM HERE — EVERY STAGE BELOW SEES EVERYTHING ABOVE IT</text>
+
+      <!-- reconciliation pass 1 -->
+      <text class="cap" x="14" y="284">RECONCILIATION · PASS 1 — DATA LAYER</text>
+
+      <!-- synthesis chain -->
+      <text class="cap" x="14" y="312">STEPS 4–6 · SYNTHESIS — SEQUENTIAL</text>
+      <g>
+        <path class="flow" d="M120,262 V322" marker-end="url(#ar)"/>
+        <rect class="box box-b" x="14" y="324" width="212" height="56" rx="2"/>
+        <text class="lbl" x="26" y="345">4 · maturation_scorer</text>
+        <text class="sub" x="26" y="362">6 dimensions → lifecycle stage · 0.10</text>
+
+        <path class="flow" d="M226,352 H244" marker-end="url(#ar)"/>
+        <rect class="box box-v" x="246" y="324" width="212" height="56" rx="2"/>
+        <text class="lbl" x="258" y="345">5 · risk_officer</text>
+        <text class="sub" x="258" y="362">6 categories · unilateral veto · 0.15</text>
+
+        <path class="flow" d="M458,352 H476" marker-end="url(#ar)"/>
+        <rect class="box box-b" x="478" y="324" width="212" height="56" rx="2"/>
+        <text class="lbl" x="490" y="345">5b · devils_advocate</text>
+        <text class="sub" x="490" y="362">counter-thesis · no score weight</text>
+
+        <path class="flow" d="M690,352 H708" marker-end="url(#ar)"/>
+        <rect class="box box-b" x="710" y="324" width="212" height="56" rx="2"/>
+        <text class="lbl" x="722" y="345">6 · portfolio_manager</text>
+        <text class="sub" x="722" y="362">sizing 1–15% · entry timing · 0.05</text>
+      </g>
+
+      <!-- veto escape -->
+      <path class="flow-v" d="M352,380 V404 H946 V646" marker-end="url(#arv)"/>
+      <text class="cap" x="366" y="399" fill="var(--veto)">VETO — SHORT-CIRCUITS EVERY DOWNSTREAM STAGE</text>
+
+      <!-- report writer -->
+      <text class="cap" x="14" y="432">STEP 7 · REPORT ASSEMBLY</text>
+      <path class="flow" d="M120,380 V442" marker-end="url(#ar)"/>
+      <rect class="box box-b" x="14" y="444" width="360" height="56" rx="2"/>
+      <text class="lbl" x="26" y="465">report_writer</text>
+      <text class="sub" x="26" y="482">25 sections · no domain tools · pure synthesis</text>
+
+      <!-- reconciliation pass 2 -->
+      <path class="flow-b" d="M374,472 H420" marker-end="url(#arb)"/>
+      <rect class="box" x="422" y="444" width="196" height="56" rx="2"/>
+      <text class="lbl" x="434" y="465" font-size="10">reconciliation · pass 2</text>
+      <text class="sub" x="434" y="482">the report checked against itself</text>
+
+      <!-- weighted score -->
+      <rect class="box box-in" x="640" y="444" width="326" height="56" rx="2"/>
+      <text class="lbl" x="652" y="465">weighted score — computed first</text>
+      <text class="sub" x="652" y="482">10 agents × weight → band, before the Chair reads anything</text>
+
+      <!-- ray -->
+      <text class="cap" x="14" y="532">POST · INDEPENDENT REVIEW</text>
+      <path class="flow" d="M194,500 V544" marker-end="url(#ar)"/>
+      <rect class="box box-b" x="88" y="546" width="300" height="56" rx="2"/>
+      <text class="lbl" x="100" y="567">ray_dalio</text>
+      <text class="sub" x="100" y="584">different mental models · free to dissent</text>
+
+      <!-- chair inputs -->
+      <path class="flow" d="M238,602 V648" marker-end="url(#ar)"/>
+      <path class="flow" d="M520,500 V648" marker-end="url(#ar)"/>
+      <path class="flow" d="M803,500 V648" marker-end="url(#ar)"/>
+
+      <text class="cap" x="14" y="640">STEP 8 · DECISION</text>
+      <rect class="box box-b" x="14" y="650" width="952" height="54" rx="2"/>
+      <text class="lbl" x="28" y="672">committee_chair</text>
+      <text class="sub" x="28" y="689">reads the report, Ray's dissent, the contradiction block, the veto flag and the pre-computed band — then adjudicates and records the trace</text>
+
+      <!-- outcomes -->
+      <path class="flow" d="M490,704 V722"/>
+      <text class="lbl" x="352" y="736" fill="var(--brass)">BUY ≥ 75</text>
+      <text class="lbl" x="440" y="736" fill="var(--brass)">WATCH ≥ 60</text>
+      <text class="lbl" x="546" y="736" fill="var(--brass)">PASS &lt; 60</text>
+      <text class="lbl" x="632" y="736" fill="var(--veto)">VETO — OVERRIDES ALL</text>
+    </svg>
+
+    <div class="legend">
+      <span class="key"><i style="border-top:2px solid var(--ink-3)"></i>context flow</span>
+      <span class="key"><i style="border-top:2px solid var(--brass)"></i>report path</span>
+      <span class="key"><i style="border-top:2px dashed var(--veto)"></i>veto short-circuit</span>
+      <span class="key">Teal boxes run concurrently · brass boxes run in order</span>
+    </div>
+  </div>
+
+  <div class="rows" style="margin-top:2.5rem">
+    <div class="row">
+      <h3>Isolation in step 1</h3>
+      <div class="body">
+        <p>The eight data agents receive identical context — resolved project metadata, canonical metrics with an as-of date, and any standing contradiction warnings — and nothing else. They cannot read each other's output.</p>
+        <p>This makes convergence meaningful. Eight agents that read one another produce one opinion restated eight times; agreement between agents that cannot see each other is evidence.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Accumulation after</h3>
+      <div class="body">
+        <p>From step 4 onward the context grows monotonically. The Maturation Scorer sees the whole data layer, the Risk Officer sees that plus maturation, and so on down the chain. The Chair sees everything every agent produced.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Tool-calling loop</h3>
+      <div class="body">
+        <p>Each agent runs up to fifteen rounds of call, tool use, result, call — deciding for itself when it has enough to emit structured JSON. An agent that exhausts its rounds returns an explicit error rather than a partial answer.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Two reconciliation passes</h3>
+      <div class="body">
+        <p>The first pass compares the data layer against itself, before synthesis. The second runs after the report exists and checks the report's own figures — the assembling agent is otherwise the only one whose internal consistency nothing tests.</p>
+        <p>A figure is only reported as contradicted when two or more distinct agents assert incompatible values. A lone dissenter is almost always measuring something adjacent and labelling it loosely.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="agents">
+  <div class="sechead">
+    <span class="eyebrow">The roster</span>
+    <h2>Fifteen agents</h2>
+    <p>Breadth is bought cheaply and in parallel on the balanced model tier; judgement is bought expensively and in sequence on the strong tier.</p>
+  </div>
+
+  <div class="stage">
+    <div class="stage-bar">
+      <span class="stage-n">STEP 1</span><h3>Data gathering</h3>
+      <div class="tags"><span class="tag par">Parallel</span><span class="tag mdl">Sonnet</span></div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="card-top"><h4>tokenomics_analyst</h4><span class="wt">0.15</span></div>
+        <p>Supply structure, distribution, vesting schedules, value accrual, token utility. Catches dilution risk and insider concentration.</p>
+        <div class="tools">get_price · get_token_info · get_tvl · web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>tech_infra_analyst</h4><span class="wt">0.15</span></div>
+        <p>Consensus mechanism, throughput, finality, security model, codebase quality, technical debt, upgrade path. Joint-highest weight in the score.</p>
+        <div class="tools">web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>onchain_analyst</h4><span class="wt">0.12</span></div>
+        <p>Wallet behaviour, holder concentration, TVL trends, liquidity depth, wash-trading detection, developer activity.</p>
+        <div class="tools">get_price · get_token_info · get_tvl · web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>competitive_intel</h4><span class="wt">0.10</span></div>
+        <p>Market share, SWOT, moat assessment — network effects and switching costs — category positioning, defensibility.</p>
+        <div class="tools">get_price · get_tvl · get_protocol_fees · web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>governance_analyst</h4><span class="wt">0.08</span></div>
+        <p>DAO design, voting mechanisms, decentralisation quality, treasury management, centralisation risk, governance capture.</p>
+        <div class="tools">get_tvl · web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>field_intel</h4><span class="wt">0.05</span></div>
+        <p>Social sentiment across Twitter, Discord and Telegram; community health, engagement quality, the narrative-versus-reality gap.</p>
+        <div class="tools">web_search · search_twitter</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>legal_regulatory</h4><span class="wt">0.05</span></div>
+        <p>Token classification risk, jurisdiction, compliance posture, enforcement actions, sanctions exposure.</p>
+        <div class="tools">web_search</div>
+      </div>
+      <div class="card mute">
+        <div class="card-top"><h4>technical_analyst</h4><span class="wt none">Excluded</span></div>
+        <p>Price structure, support and resistance, order-book depth, entry timing. Reaches the Chair only as <code>technical_entry_context</code> — a deliberately narrow channel, so a chart read cannot reach conviction by a second route.</p>
+        <div class="tools">get_klines · get_orderbook_depth · compute_technical_levels · get_price</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-bar">
+      <span class="stage-n">STEPS 4–6</span><h3>Synthesis</h3>
+      <div class="tags"><span class="tag seq">Sequential</span><span class="tag mdl">Opus</span></div>
+    </div>
+    <div class="grid">
+      <div class="card flag">
+        <div class="card-top"><h4>risk_officer</h4><span class="wt">0.15</span></div>
+        <p><span class="pill">Veto power</span> Six risk categories. Automatic veto on: unaudited above $10M TVL, SEC or DOJ investigation, rug pattern, wash trading above 50%, scammer links, security enforcement. A veto is final.</p>
+        <div class="tools">get_price · get_token_info · get_tvl · web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>maturation_scorer</h4><span class="wt">0.10</span></div>
+        <p>Six dimensions — roadmap execution, team track record, product-market fit, revenue trajectory, ecosystem health, time in market — resolving to a lifecycle stage.</p>
+        <div class="tools">get_price · get_tvl · get_protocol_fees · web_search</div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h4>portfolio_manager</h4><span class="wt">0.05</span></div>
+        <p>Sector overlap, correlation, position sizing between 1% and 15%, mandate compliance, and entry timing — now, wait, or DCA.</p>
+        <div class="tools">get_price · get_token_info · web_search</div>
+      </div>
+      <div class="card mute">
+        <div class="card-top"><h4>devils_advocate</h4><span class="wt none">Excluded</span></div>
+        <p>Structured dissenter. Load-bearing assumptions, the strongest counter-thesis, weakness classification — fatal, manageable, noise — and invalidation triggers. Carrying no weight is the point: it argues rather than grades.</p>
+        <div class="tools">web_search · search_twitter</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-bar">
+      <span class="stage-n">STEP 7–8 + POST</span><h3>Reporting and decision</h3>
+      <div class="tags"><span class="tag seq">Sequential</span><span class="tag mdl">Opus</span></div>
+    </div>
+    <div class="grid">
+      <div class="card mute">
+        <div class="card-top"><h4>report_writer</h4><span class="wt none">Excluded</span></div>
+        <p>Pure synthesis. Compiles every upstream output into the twenty-five section report — executive summary through signposts, plus the delta against the last evaluation of this project.</p>
+        <div class="tools">memory tools only</div>
+      </div>
+      <div class="card mute">
+        <div class="card-top"><h4>ray_dalio</h4><span class="wt none">Excluded</span></div>
+        <p>Independent contrarian review. Inversion, circle of competence, margin of safety, incentive analysis, avoiding stupidity. Free to disagree with the committee's conclusion.</p>
+        <div class="tools">web_search · search_twitter</div>
+      </div>
+      <div class="card mute">
+        <div class="card-top"><h4>committee_chair</h4><span class="wt none">Excluded</span></div>
+        <p>Final decision authority. Reads the full report, Ray's take, the contradiction block, the veto flag and the pre-computed band. Emits decision, conviction, sizing, entry strategy and an adjudication trace.</p>
+        <div class="tools">memory tools only</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tools">
+  <div class="sechead">
+    <span class="eyebrow">Instruments</span>
+    <h2>What each agent can reach for</h2>
+    <p>Tool access is deliberately narrow — an agent holds only the instruments its seat requires. Three memory tools are appended to every agent regardless of role: <code>search_notes</code>, <code>read_note</code> and <code>semantic_search_notes</code>, which retrieve against prior evaluations and IC transcripts.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Agent</th>
+          <th class="grp" colspan="4">Market data</th>
+          <th class="grp" colspan="3">Price structure</th>
+          <th class="grp" colspan="2">Open web</th>
+        </tr>
+        <tr>
+          <th>price</th><th>token<br>info</th><th>tvl</th><th>protocol<br>fees</th>
+          <th>klines</th><th>orderbook<br>depth</th><th>technical<br>levels</th>
+          <th>web<br>search</th><th>twitter</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="agent">tokenomics_analyst</td><td class="dot">●</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">onchain_analyst</td><td class="dot">●</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">risk_officer</td><td class="dot">●</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">competitive_intel</td><td class="dot">●</td><td class="dot off">·</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">maturation_scorer</td><td class="dot">●</td><td class="dot off">·</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">portfolio_manager</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">governance_analyst</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">tech_infra_analyst</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">legal_regulatory</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">field_intel</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot">●</td></tr>
+        <tr><td class="agent">devils_advocate</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot">●</td></tr>
+        <tr><td class="agent">ray_dalio</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot">●</td></tr>
+        <tr><td class="agent">technical_analyst</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot">●</td><td class="dot">●</td><td class="dot">●</td><td class="dot off">·</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">report_writer</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td></tr>
+        <tr><td class="agent">committee_chair</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td><td class="dot off">·</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="rows" style="margin-top:2.5rem">
+    <div class="row">
+      <h3>Sources</h3>
+      <div class="body">
+        <p>Price, token info and market data come from CoinGecko. TVL and protocol fees come from DeFiLlama. Klines, order-book depth and computed technical levels come from exchange data. Open-web search runs through Brave, and social retrieval through the X API.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>The two toolless seats</h3>
+      <div class="body">
+        <p>The Report Writer and the Chair hold no domain tools at all. Both exist to reason over what the committee already produced, and giving either one a live data feed would let it introduce a figure no analyst ever vouched for.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Deterministic ordering</h3>
+      <div class="body">
+        <p>Tool definitions render at position zero of the cached prompt prefix, ahead of the system prompt, so the array order is fixed and deduplicated by first occurrence. An unordered set here silently defeats prompt caching across worker processes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="weights">
+  <div class="sechead">
+    <span class="eyebrow">Scoring</span>
+    <h2>Weights and order of operations</h2>
+    <p>The overall score is a weighted average of ten agent scores from 0 to 100. Five agents are deliberately excluded: the Technical Analyst, the Devil's Advocate, and the three reporting and decision agents.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Agent</th><th>Weight</th><th class="barcell"></th><th>Stage</th></tr></thead>
+      <tbody>
+        <tr><td class="agent">tokenomics_analyst</td><td class="num">0.15</td><td class="barcell"><div class="bar" style="width:100%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">tech_infra_analyst</td><td class="num">0.15</td><td class="barcell"><div class="bar" style="width:100%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">risk_officer</td><td class="num">0.15</td><td class="barcell"><div class="bar" style="width:100%"></div></td><td class="stagecell">Synthesis</td></tr>
+        <tr><td class="agent">onchain_analyst</td><td class="num">0.12</td><td class="barcell"><div class="bar" style="width:80%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">competitive_intel</td><td class="num">0.10</td><td class="barcell"><div class="bar" style="width:66%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">maturation_scorer</td><td class="num">0.10</td><td class="barcell"><div class="bar" style="width:66%"></div></td><td class="stagecell">Synthesis</td></tr>
+        <tr><td class="agent">governance_analyst</td><td class="num">0.08</td><td class="barcell"><div class="bar" style="width:53%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">field_intel</td><td class="num">0.05</td><td class="barcell"><div class="bar" style="width:33%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">legal_regulatory</td><td class="num">0.05</td><td class="barcell"><div class="bar" style="width:33%"></div></td><td class="stagecell">Data</td></tr>
+        <tr><td class="agent">portfolio_manager</td><td class="num">0.05</td><td class="barcell"><div class="bar" style="width:33%"></div></td><td class="stagecell">Synthesis</td></tr>
+        <tr class="tot"><td class="agent">Total</td><td class="num">1.00</td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="rows" style="margin-top:2.5rem">
+    <div class="row">
+      <h3>Score first</h3>
+      <div class="body">
+        <p>The weighted score is computed before the Chair deliberates, and the Chair is shown the resulting band. Divergence between the band and the Chair's decision is recorded as divergence; a contradiction — a decision the band cannot support at all — is recorded separately. They are different failures and do not share a field.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Bands</h3>
+      <div class="body">
+        <p>75 and above reads BUY, 60 and above WATCH, below 60 PASS. A Risk Officer veto overrides everything to VETO, and no downstream agent has a mechanism to lift it.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Missing agents</h3>
+      <div class="body">
+        <p>When an agent fails, its weight is dropped and the remaining weights renormalise. A run therefore still scores with a degraded data layer, and the report records which seats were empty.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="contention">
+  <div class="sechead">
+    <span class="eyebrow">Adversarial design</span>
+    <h2>Mechanisms of contention</h2>
+    <p>A committee that agrees with itself is a single analyst with extra latency. Five mechanisms exist to force disagreement into the record rather than letting it dissolve — three argumentative, two arithmetic.</p>
+  </div>
+  <div class="rows">
+    <div class="row">
+      <h3>Unilateral veto</h3>
+      <div class="body">
+        <p>The Risk Officer can veto regardless of every other score, on six enumerated triggers. It is the only unilateral power in the system and it is final — no later stage can lift it, and the Chair has no override mechanism.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Mandated dissent</h3>
+      <div class="body">
+        <p>The Devil's Advocate is instructed to find reasons not to invest and to classify each weakness as fatal, manageable, or noise. It carries no score weight, so it cannot be neutralised by being outvoted — its output reaches the Chair as argument rather than as a number.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Independent review</h3>
+      <div class="body">
+        <p>Ray Dalio runs after the report is written, using different mental models, and may explicitly disagree with the committee. The Chair must adjudicate all three perspectives and record how each conflict was resolved in the adjudication trace.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Within-run reconciliation</h3>
+      <div class="body">
+        <p>Figures are extracted from every agent's prose and compared inside a single evaluation. Where two or more distinct agents assert incompatible values for the same metric, entity and period, the conflict is surfaced to the Chair before it decides.</p>
+        <p>A binding rule keeps this honest: a figure governed by a nearer noun — a buyback, a treasury balance, a staked amount — does not bind to a metric inferred from a nearby time window.</p>
+      </div>
+    </div>
+    <div class="row">
+      <h3>Cross-report sweep</h3>
+      <div class="body">
+        <p>Every ten reports, or every thirty days, a sweep compares all persisted reports for figures that cannot all be true. Findings are verified, then written into the committee's knowledge base as warnings that reach future evaluations through their shared context.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="infra">
+  <div class="sechead">
+    <span class="eyebrow">Platform</span>
+    <h2>Infrastructure</h2>
+    <p>FastAPI on port 8100, Postgres 16 with pgvector, Redis, Docker Compose on a Hetzner VPS reached over Tailscale. Claude primary with an OpenAI fallback. Notion write-back for project tracking, and a Telegram bot as the human surface.</p>
+  </div>
+  <div class="new">
+    <div class="newcard">
+      <h4>Prompt caching</h4>
+      <p>The system prompt is ordered stable-first with volatile content behind an explicit boundary, and tool arrays are deterministically ordered so a cache entry written by one worker is readable by another.</p>
+    </div>
+    <div class="newcard">
+      <h4>Forward-only migrations</h4>
+      <p>An advisory lock and a checksum ledger. <code>init.sql</code> runs only on an empty volume, so schema changes reach production through the migration runner or not at all.</p>
+    </div>
+    <div class="newcard">
+      <h4>Signposts ledger</h4>
+      <p>A WATCH is falsifiable only if its triggers are recorded. The Chair emits signposts and a review date, and both are persisted against the evaluation.</p>
+    </div>
+    <div class="newcard">
+      <h4>Calibration loop</h4>
+      <p>Date-anchored checkpoints against realised outcomes, using true historical pricing with recorded provenance. Future target dates are refused rather than silently accepted.</p>
+    </div>
+    <div class="newcard">
+      <h4>Delta reporting</h4>
+      <p>Re-evaluating a project re-runs what moves — token, socials, governance — and reports section 25 against the previous evaluation rather than starting from nothing.</p>
+    </div>
+    <div class="newcard">
+      <h4>Queue and confirmation</h4>
+      <p>The bot confirms the resolved project before spending, queues jobs with JSON persistence across restarts, and carries no read timeout on the evaluation call.</p>
+    </div>
+    <div class="newcard">
+      <h4>Semantic retrieval</h4>
+      <p>Notion notes are chunked and embedded into pgvector. The similarity threshold is derived from the measured noise ceiling of the embedding model rather than set by convention.</p>
+    </div>
+    <div class="newcard">
+      <h4>Report surfaces</h4>
+      <p>Reports render as escape-first server-side HTML with no client JavaScript and a <code>default-src 'none'</code> policy, and as Markdown for delivery through the bot.</p>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">Committee Orchestrator · architecture reference</footer>
+
+</div>

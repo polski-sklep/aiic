@@ -55,6 +55,57 @@ REPORT_BASE = os.environ.get("COMMITTEE_REPORT_BASE", API_BASE)
 
 
 # ---------------------------------------------------------------------------
+# Run cost
+# ---------------------------------------------------------------------------
+# The bot reports what an evaluation cost, and the rates and the arithmetic
+# live in backend/app/llm/pricing.py — one definition, shared with whatever
+# puts the number in the persisted record and on the HTML report.
+#
+# Loaded BY PATH rather than as `app.llm.pricing`, deliberately. Importing the
+# package would execute app/llm/__init__.py -> app/utils/types.py, which needs
+# TypeAliasType (Python 3.12+). This process is not the backend: it runs under
+# the VPS system interpreter, which is 3.10.12, with only httpx and
+# python-telegram-bot installed. A package import would work in every test and
+# fail on the one machine that sends the messages.
+#
+# And it is guarded. A missing or broken pricing module must cost the message
+# its cost line and nothing else — never the report it is attached to.
+def _load_pricing():
+    import importlib.util
+    import sys
+
+    name = "committee_bot_pricing"
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "backend", "app", "llm", "pricing.py",
+    )
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec_module, which is not optional here. pricing.py
+    # uses `from __future__ import annotations`, so @dataclass resolves its
+    # field types lazily via `sys.modules[cls.__module__].__dict__` — with the
+    # module absent from sys.modules that lookup returns None and the import
+    # dies on the first dataclass. Caught only because the guard below turned
+    # it into a missing cost line instead of a crash.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
+try:
+    pricing = _load_pricing()
+except Exception as _exc:  # pragma: no cover - exercised only by a broken deploy
+    pricing = None
+    logger.warning("Run-cost pricing unavailable, cost line will be omitted: %s", _exc)
+
+
+# ---------------------------------------------------------------------------
 # The queue
 # ---------------------------------------------------------------------------
 # Why an explicit queue at all: python-telegram-bot processes updates one at a
@@ -837,6 +888,49 @@ async def fetch_report_markdown(eval_id):
     return body, filename
 
 
+def cost_line(data):
+    """The run-cost line for a completed evaluation, or "" if it cannot be had.
+
+    Wrapped whole in a try/except on purpose. This is a courtesy line on a
+    notification; the report it accompanies took thirteen minutes and real
+    money. No arithmetic here is allowed to be the reason Jacob does not get it.
+    """
+    if pricing is None:
+        return ""
+    try:
+        return pricing.format_cost_line(pricing.price_run(data.get("agent_results", {})))
+    except Exception as exc:
+        logger.warning("Could not price this run: %s", exc)
+        return ""
+
+
+def format_completion_message(data, name, ticker, report_url, md_url):
+    """Build the completion notification. Pure — no network, no Telegram."""
+    chair = data.get("agent_results", {}).get("committee_chair", {}).get("output", {})
+    if not isinstance(chair, dict):
+        chair = {}
+
+    # The cost joins the run-metadata block rather than trailing after the
+    # links: it is a fact about this run, and it is read at a glance with the
+    # decision, not hunted for at the bottom.
+    head = [
+        "Decision: %s" % data.get("recommendation", "N/A"),
+        "Score: %s" % format_score(data.get("overall_score")),
+        "Conviction: %s" % chair.get("conviction_level", "N/A"),
+    ]
+    cost = cost_line(data)
+    if cost:
+        head.append(cost)
+
+    return (
+        "EVALUATION COMPLETE: %s (%s)\n\n"
+        "%s\n\n"
+        "%s\n\n"
+        "Report: %s\n"
+        "Markdown: %s"
+    ) % (name, ticker, "\n".join(head), extract_summary(data)[:500], report_url, md_url)
+
+
 async def run_evaluation(message, project):
     name = project["project_name"]
     ticker = project["ticker"]
@@ -885,34 +979,14 @@ async def run_evaluation(message, project):
         return
 
     # Extract results
-    rec = data.get("recommendation", "N/A")
     eval_id = data.get("evaluation_id", "")
-
-    chair = data.get("agent_results", {}).get("committee_chair", {}).get("output", {})
-    if not isinstance(chair, dict):
-        chair = {}
-    summary = extract_summary(data)
 
     report_url = "%s/api/reports/%s/html" % (REPORT_BASE, eval_id)
     md_url = "%s/api/reports/%s/markdown" % (REPORT_BASE, eval_id)
 
-    msg = (
-        "EVALUATION COMPLETE: %s (%s)\n\n"
-        "Decision: %s\n"
-        "Score: %s\n"
-        "Conviction: %s\n\n"
-        "%s\n\n"
-        "Report: %s\n"
-        "Markdown: %s"
-    ) % (
-        name, ticker,
-        rec, format_score(data.get("overall_score")),
-        chair.get("conviction_level", "N/A"),
-        summary[:500],
-        report_url, md_url,
+    await update.message.reply_text(
+        format_completion_message(data, name, ticker, report_url, md_url)
     )
-
-    await update.message.reply_text(msg)
 
     # The links above only resolve on the tailnet. Send the report itself too,
     # so it is readable on a phone anywhere. A failed fetch must not lose the

@@ -31,9 +31,14 @@ Assumptions and judgement calls: [`PROJECT_DECISIONS.md`](PROJECT_DECISIONS.md).
 | Canonical facts | `agent/canonical-facts` | DeFiLlama/CoinGecko resolution, `case_context` baseline figures | Integrated |
 | Delta report | `agent/delta-report` | Section 25 — what changed since the last evaluation | Integrated |
 | Consistency audit | `agent/consistency-audit` | Cross-report contradiction sweep, findings ledger, committee warnings | Integrated |
-| Audit trigger | `agent/audit-trigger` | Make the sweep periodic — nothing has ever invoked it | **In progress** |
-| Run status | `agent/run-status` | An evaluation whose Report Writer failed is recorded `completed` | **In progress** |
+| Audit trigger | `agent/audit-trigger` | Make the sweep periodic — nothing has ever invoked it | **Verified, ready to merge** |
+| Run status | `agent/run-status` | An evaluation whose Report Writer failed is recorded `completed` | **Verified, ready to merge** |
 | Intra-run reconcile | `agent/intra-run-reconcile` | Within-evaluation contradiction detection (`reconcile_data` was inert) | Integrated |
+
+Evidence for the two branches marked *Verified, ready to merge*:
+[`docs/audit-trigger-and-run-status-verification.md`](docs/audit-trigger-and-run-status-verification.md).
+Neither is merged. Three items are Jacob's: running the production backfill,
+the automatic-retry spending decision, and the deploy.
 
 ## Ownership
 

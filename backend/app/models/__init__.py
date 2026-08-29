@@ -43,10 +43,26 @@ class Evaluation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))
+    # One question only: did this run produce a 24-section report?
+    #   'running' | 'completed' | 'report_failed' | 'gate_failed' | 'failed'
+    # The vocabulary is defined in app/agents/orchestrator.py (STATUS_*), which
+    # is where the pipeline decides it. Every existing reader tests
+    # `== 'completed'` and none enumerates the failure values, so a value it
+    # does not recognise is still classified correctly as "not a success".
     status = Column(String, default="pending")
     triggered_by = Column(String)
     config = Column(JSONB, default=dict)
     error = Column(Text)
+    # Added by backend/migrations/0005_evaluation_run_health.sql.
+    #
+    # How much of the committee survived, as a queryable record. Deliberately
+    # NOT part of `status`: a run where three data agents died but the report
+    # was written did produce its artefact and must stay `completed`, or the
+    # consistency sweep and the retrospective would stop reading a real report.
+    # Degradation is a second axis, and this is it. See
+    # orchestrator.build_run_health for what the keys mean and for the three
+    # production runs that motivated each one.
+    run_health = Column(JSONB)
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), default=utcnow)

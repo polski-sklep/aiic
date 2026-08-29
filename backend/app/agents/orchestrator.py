@@ -67,6 +67,42 @@ def _render_prior_context(prior) -> str:
 class _SkipCalibration(Exception):
     """Raised to skip the calibration write for a run with no real verdict."""
 
+
+# --- What `evaluations.status` means ---------------------------------------
+#
+# ONE question, and only one: did this run produce the artefact it exists to
+# produce — a 24-section committee report?
+#
+# Every existing reader of the column tests `== "completed"` and nothing
+# enumerates the failure values (api/reports.py `_load_report_parts` and
+# `_list_report_rows`, knowledge/history.py `_build_prior`). That is what makes
+# a new terminal value safe to add: a reader that does not know the word
+# `report_failed` still classifies it as "not a success", which is correct.
+#
+# Degradation is deliberately NOT in here. A run where three data agents died
+# but the report was written did produce its artefact, and every `== completed`
+# reader is right to include it. How degraded it was is a separate axis, and it
+# lives in `evaluations.run_health` (build_run_health, below).
+STATUS_RUNNING = "running"
+STATUS_COMPLETED = "completed"
+#: The pipeline ran to the end but the Report Writer produced no `sections`.
+#: Distinct from `failed` because the two leave very different wreckage: a
+#: `failed` run raised out of api/evaluate.py and persisted nothing (the one
+#: such row in production, ENS c8f3947d, has zero agent_outputs), while this
+#: one has fourteen agents' worth of paid output on disk and is re-adjudicable.
+#: Collapsing them would destroy exactly the distinction this exists to record.
+STATUS_REPORT_FAILED = "report_failed"
+#: The structural gate rejected the project before any agent ran. The
+#: orchestrator has always returned this in its result dict; api/evaluate.py
+#: used to throw it away and write `completed`.
+STATUS_GATE_FAILED = "gate_failed"
+#: The pipeline raised. Written by api/evaluate.py's exception handler only.
+STATUS_FAILED = "failed"
+
+#: Terminal statuses that mean "no report was produced". Exported so a caller
+#: can ask the question without hardcoding the vocabulary.
+NO_REPORT_STATUSES = frozenset({STATUS_REPORT_FAILED, STATUS_GATE_FAILED, STATUS_FAILED})
+
 StatusCallback = Callable[[str, str, JSONObject], Awaitable[None]] | None
 
 # Recommendation bands for the weighted committee score (AIIC_HANDOFF.md §3):
@@ -94,6 +130,27 @@ _DECISION_BAND: dict[str, str] = {v: k for k, v in _BAND_DECISION.items()}
 
 # Band ordering, so "how far apart" is a number and not a vibe.
 _BAND_RANK: dict[str, int] = {"PASS": 0, "WATCH": 1, "INVEST": 2}
+
+
+# The weighted-score table. Lifted out of `_calc_score` unchanged — same ten
+# names, same ten values — because `build_run_health` has to report what
+# fraction of this weight actually carried a score, and a second copy of the
+# table is how the two answers drift apart.
+#
+# D6/PROJECT_DECISIONS: nothing here changes scoring. `_calc_score` reads this
+# dict and computes exactly what it computed before.
+SCORE_WEIGHTS: dict[str, float] = {
+    "tokenomics_analyst": 0.15,
+    "onchain_analyst": 0.12,
+    "tech_infra_analyst": 0.15,
+    "governance_analyst": 0.08,
+    "competitive_intel": 0.10,
+    "field_intel": 0.05,
+    "risk_officer": 0.15,
+    "maturation_scorer": 0.10,
+    "legal_regulatory": 0.05,
+    "portfolio_manager": 0.05,
+}
 
 
 def score_band(score: float | None) -> str | None:
@@ -405,6 +462,204 @@ def format_risk_block(risks: list[JSONObject]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Run health — did this run produce its artefact, and how much of the committee
+# was actually alive when it did?
+# ---------------------------------------------------------------------------
+
+
+def report_deliverable_state(result: AgentResult) -> tuple[bool, str | None]:
+    """``(usable, reason)`` for the Report Writer's output.
+
+    The deliverable is the 24-section structured report, and `sections` is the
+    only key that carries it: api/reports.py addresses sections by name,
+    knowledge/consistency.py extracts claims per section, and
+    chair.format_report_for_chair renders sections. A payload without them
+    satisfies none of those consumers, whatever else it contains.
+
+    Two failure modes reach this function and both are recorded, because they
+    need different remedies:
+
+    * ``call_failed`` — the model call itself did not return. Every one of the
+      four in production is ``Error code: 429 ... exceeded your current quota``,
+      and in all four the *whole committee* died with it (14 of 14, 15 of 15
+      agents errored). Transient; a re-run is the remedy.
+    * ``unparseable`` — the model answered and the answer would not parse. On
+      Hyperliquid e2d96b62 the response ran to 8,436 output tokens and stopped
+      mid-string inside the object, ~21.5 KB of JSON that never closed.
+
+      This was first written up as "not transient: the same prompt will hit the
+      same ceiling". The database contradicts that and the correction matters,
+      because it is the difference between "re-running is futile" and
+      "re-running is the remedy". Measured on the corpus: the same project was
+      re-run two hours later as be8210d4 and its Report Writer returned 55,345
+      bytes that parsed cleanly, against e2d96b62's 22,382 that did not. Same
+      prompt shape, same day, 2.5x the output, no truncation. The ceiling is
+      stochastic, not deterministic, so a re-run is a real remedy here too —
+      it is simply not one the pipeline can take for free, because unlike a
+      429 there is no reason to expect the second attempt to be cheap.
+
+      What is NOT transient about e2d96b62 is how much went with it: the
+      Report Writer, Ray and the Chair all hit the same wall on the same run
+      (22,382 / 11,290 / 11,480 bytes, all three falling back to raw_output),
+      while all twelve other agents returned full structured output and
+      scored. The whole synthesis tier failed at once and the data tier was
+      untouched.
+
+    On ``unparseable`` the output holds `summary` and `raw_output`, which looks
+    like a degraded success and is not one. agents/base.py already settled the
+    identical question one stage later: a Chair that hits its output ceiling
+    mid-JSON is recorded as CHAIR_FAILED and kept out of the ledger, because
+    "a parse failure is not a verdict". A parse failure is not a report either,
+    and the argument is stronger here — see the note at the call site on what
+    the Chair is left holding.
+    """
+    output = result.output if isinstance(result.output, dict) else {}
+    sections = output.get("sections")
+    if isinstance(sections, dict) and sections:
+        return True, None
+    if result.error or "error" in output:
+        return False, "call_failed"
+    if "parse_error" in output:
+        return False, "unparseable"
+    # No sections, no error, no parse_error: the model returned a well-formed
+    # object that simply is not a report. Rare, still not a deliverable.
+    return False, "no_sections"
+
+
+#: The eight step-1 agents, taken from the classes rather than written out, so
+#: adding a ninth cannot leave this list behind.
+DATA_AGENT_NAMES = frozenset(
+    {
+        TokenomicsAnalyst.name,
+        GovernanceAnalyst.name,
+        OnChainAnalyst.name,
+        TechInfraAnalyst.name,
+        CompetitiveIntel.name,
+        FieldIntel.name,
+        LegalRegulatory.name,
+        TechnicalAnalyst.name,
+    }
+)
+
+#: Agents whose failure degrades a run without destroying it.
+#:
+#: The eight data agents run in parallel and the synthesis layer is designed to
+#: tolerate gaps — docs/CONTRACTS.md §4.2 makes their mutual independence the
+#: design — so one of them dying costs coverage, not the artefact. The four
+#: synthesis agents added here each consume the others' work and none of them
+#: is the deliverable: Ray is a second opinion on a report that still exists,
+#: and maturation, the devil's advocate and the portfolio manager each
+#: contribute a slice of the score.
+#:
+#: Two agents are deliberately absent. The Report Writer is the artefact and has
+#: no redundancy — nothing else in the pipeline assembles the sections, so its
+#: failure is terminal rather than degrading. The Chair is the verdict, and the
+#: pipeline already treats its failure as its own outcome (CHAIR_FAILED).
+#: `risk_officer` is also absent: it is neither, and see build_run_health.
+_DEGRADATION_ONLY = DATA_AGENT_NAMES | {
+    MaturationScorer.name,
+    DevilsAdvocate.name,
+    PortfolioManager.name,
+    RayDalio.name,
+}
+
+
+def build_run_health(
+    agent_results: dict[str, AgentResult],
+    report_usable: bool,
+    report_failure_reason: str | None,
+    decision: str | None,
+    vetoed: bool,
+) -> JSONObject:
+    """A queryable record of how much of the committee survived this run.
+
+    Instrument only — nothing here feeds a prompt, a score or a decision.
+
+    WHY THIS IS SEPARATE FROM `status`. Three of the sixteen persisted runs
+    finished with a real report and a damaged committee, and the record cannot
+    currently say so:
+
+    * Plasma d5571fd9 — six of the eight data agents died on a prompt-template
+      bug (``Invalid format specifier``). `_calc_score` sums the weights that
+      *did* score and divides by that sum, so the 0.45 of the weight table that
+      survived was renormalised to 1.0 and the resulting number is
+      indistinguishable, in the ledger and in the report, from one computed on
+      the whole committee. `score_weight_covered` is that fraction, recorded.
+    * Chainlink 75cf1b3d — the Risk Officer exhausted its tool rounds and
+      returned nothing. `vetoed` is read as ``risk.output.get("veto", False)``,
+      so an agent that never answered reads as an agent that cleared the
+      project. Settled decision 1 (AIIC_HANDOFF §11, PROJECT_DECISIONS D4) is
+      that a veto fires on presence of danger and never on absence of evidence;
+      the converse — clearing on absence of evidence — is the same error with
+      the sign flipped, and it is live. `risk_officer_ran` records it. Whether
+      it should also be terminal is a governance question about what the
+      committee is allowed to decide, so it is reported, not decided here.
+    * GMX 8e4b3c83 — the Chair errored; `chair_decided` records it.
+
+    None of those three should stop being `completed`: the report exists, the
+    consistency sweep should read it and the retrospective should grade it.
+    They should simply stop looking identical to a clean run.
+    """
+    failed = sorted(
+        name for name, result in agent_results.items() if _agent_failed(result)
+    )
+    data_agents = [name for name in agent_results if name in DATA_AGENT_NAMES]
+    data_failed = [name for name in failed if name in DATA_AGENT_NAMES]
+
+    covered = sum(
+        weight
+        for name, weight in SCORE_WEIGHTS.items()
+        if (result := agent_results.get(name)) is not None and result.score is not None
+    )
+    total = sum(SCORE_WEIGHTS.values())
+
+    risk = agent_results.get("risk_officer")
+    chair = agent_results.get("committee_chair")
+
+    return {
+        "report_usable": report_usable,
+        "report_failure_reason": report_failure_reason,
+        "agents_run": len(agent_results),
+        "agents_failed": len(failed),
+        "failed_agents": failed,
+        # Failures that cost coverage rather than the artefact. Split out so
+        # "a degraded run" and "a broken run" are answerable separately.
+        "degraded_only_failures": sorted(n for n in failed if n in _DEGRADATION_ONLY),
+        "data_agents_total": len(data_agents),
+        "data_agents_failed": sorted(data_failed),
+        # Fraction of `SCORE_WEIGHTS` that actually carried a score. 1.0 is a
+        # whole committee; anything less means `overall_score` was renormalised
+        # over a subset and is a weaker number than it looks.
+        "score_weight_covered": round(covered / total, 3) if total else None,
+        "risk_officer_ran": risk is not None and not _agent_failed(risk),
+        # Both halves matter: the Chair's result has to be intact AND the
+        # decision has to be a decision. `_simple_rec` can return
+        # INSUFFICIENT_DATA from a healthy Chair, and CHAIR_FAILED is written
+        # by evaluate() when the Chair returned no `decision` key at all.
+        "chair_decided": (
+            chair is not None
+            and not _agent_failed(chair)
+            and bool(decision)
+            and decision not in {"CHAIR_FAILED", "INSUFFICIENT_DATA"}
+        ),
+        "vetoed": bool(vetoed),
+    }
+
+
+def _agent_failed(result: AgentResult) -> bool:
+    """True when an agent produced nothing usable.
+
+    Matches how the rest of the pipeline already reads a broken agent: an
+    `AgentResult.error`, or base.py's `parse_output` fallback, whose signature
+    is a `parse_error` key. `chair_failed` in `evaluate()` uses the same pair.
+    """
+    if result.error:
+        return True
+    output = result.output if isinstance(result.output, dict) else {}
+    return "parse_error" in output or "error" in output
+
+
 def aggregate_data_quality(results: dict[str, AgentResult]) -> JSONObject:
     """Roll the agents' own `data_quality` blocks up into one record.
 
@@ -644,9 +899,26 @@ class Orchestrator:
         if not gate.passed:
             if on_status:
                 await on_status("gate_failed", "structural_check", {"failures": gate.blocking_failures})
+            # api/evaluate.py used to discard this and write `completed`, so a
+            # project the gate REJECTED was recorded as a finished evaluation
+            # with no report. It now honours the field.
             return {
                 "project_name": project_name,
-                "status": "gate_failed",
+                "status": STATUS_GATE_FAILED,
+                "run_health": {
+                    "report_usable": False,
+                    "report_failure_reason": "gate_failed",
+                    "agents_run": 0,
+                    "agents_failed": 0,
+                    "failed_agents": [],
+                    "degraded_only_failures": [],
+                    "data_agents_total": 0,
+                    "data_agents_failed": [],
+                    "score_weight_covered": None,
+                    "risk_officer_ran": False,
+                    "chair_decided": False,
+                    "vetoed": False,
+                },
                 "gate_result": {
                     "passed": False,
                     "checks": gate.checks,
@@ -756,7 +1028,46 @@ class Orchestrator:
         agent_results[self.report_writer.name] = report
         draft_report = report.output
         refresh_context()
-        if "sections" not in draft_report:
+
+        # THE REPORT IS THE DELIVERABLE, AND ITS ABSENCE IS NOT A SUCCESS.
+        #
+        # Five of the sixteen persisted evaluations reached this line with no
+        # `sections` and every one of them was recorded `status = completed`:
+        # four ``Error code: 429 ... exceeded your current quota`` (Polkadot
+        # 5e6e4f2d, Hyperliquid b028881a, Chainlink b22be475, Aave 0f48a034)
+        # and one output-ceiling parse failure (Hyperliquid e2d96b62). Four
+        # were re-run by hand the same day, so the user got a report — but only
+        # because a human was watching. Nothing in the system said anything was
+        # wrong.
+        #
+        # The fallback below is UNCHANGED. Ray and the Chair still run, exactly
+        # as before, and the run still returns. What changes is that the result
+        # now carries a status saying the artefact is missing, so the record
+        # stops claiming otherwise.
+        #
+        # WHY THE CHAIR'S VERDICT ON THIS STUB CANNOT BE CALIBRATED. The Chair
+        # reads `draft_report`, `ray_take`, `technical_entry_context` and the
+        # source catalog, and nothing else — chair.py::get_system_prompt does
+        # not touch `prior_agent_outputs`, so when the report is gone the
+        # Chair's entire view of fifteen agents' work is the five keys below,
+        # one of which is the literal string "Report incomplete". Whatever it
+        # returns is not the committee's judgement of the project, and the
+        # ledger must not acquire a row that looks like one. Measured: in all
+        # five production cases the Chair produced no `decision` at all, so
+        # today's CHAIR_FAILED branch already catches them — but it catches
+        # them by accident, because the Chair happened to die too. The skip is
+        # made explicit below on the report's own account.
+        report_usable, report_failure_reason = report_deliverable_state(report)
+        if not report_usable:
+            logger.error(
+                "REPORT WRITER PRODUCED NO REPORT for %s (%s): %s. Recording the "
+                "run as %s. The remaining agent outputs are still persisted and "
+                "the run is re-adjudicable.",
+                project_name,
+                report_failure_reason,
+                (report.error or draft_report.get("parse_error") or "no sections key"),
+                STATUS_REPORT_FAILED,
+            )
             draft_report = {
                 "summary": draft_report.get("summary", "Report incomplete"),
                 "overall_score": self._calc_score(agent_results),
@@ -937,9 +1248,36 @@ class Orchestrator:
                 reconciliation_check["detail"],
             )
 
+        run_health = build_run_health(
+            agent_results,
+            report_usable=report_usable,
+            report_failure_reason=report_failure_reason,
+            decision=str(decision),
+            vetoed=bool(vetoed),
+        )
+        if run_health["score_weight_covered"] is not None and run_health["score_weight_covered"] < 1.0:
+            logger.warning(
+                "DEGRADED RUN for %s: overall_score %s was computed over %.0f%% of "
+                "the weight table (failed: %s). It is renormalised to look like a "
+                "whole-committee number and is not one.",
+                project_name,
+                overall,
+                100 * run_health["score_weight_covered"],
+                run_health["failed_agents"] or "none",
+            )
+        if not run_health["risk_officer_ran"]:
+            logger.error(
+                "RISK OFFICER DID NOT ANSWER for %s. `vetoed` is read off its "
+                "output, so this run recorded 'no veto' from an agent that never "
+                "cleared anything.",
+                project_name,
+            )
+
         result = {
             "project_name": project_name,
-            "status": "completed",
+            "status": STATUS_COMPLETED if report_usable else STATUS_REPORT_FAILED,
+            # Instrument only — see build_run_health. Never affects `status`.
+            "run_health": run_health,
             "case_time": case_context.get("case_time"),
             "data_reconciliation": reconciliation,
             "data_reconciliation_data_layer": data_layer_reconciliation,
@@ -981,6 +1319,11 @@ class Orchestrator:
 
         try:
             from app.knowledge.calibration import record_calibration
+
+            if not report_usable:
+                # See the long note at the Report Writer call site. The Chair
+                # adjudicated on a five-key stub, not on the committee's work.
+                raise _SkipCalibration
 
             if decision == "CHAIR_FAILED":
                 # Nothing to calibrate. A run whose adjudication failed has no
@@ -1029,10 +1372,12 @@ class Orchestrator:
                     )
         except _SkipCalibration:
             logger.warning(
-                "Calibration skipped for %s: the Chair produced no usable decision, "
-                "so there is no verdict to grade. Evaluation and report are still "
-                "persisted.",
+                "Calibration skipped for %s: %s, so there is no verdict to grade. "
+                "Evaluation and agent outputs are still persisted.",
                 project_name,
+                "the Report Writer produced no report and the Chair decided on a stub"
+                if not report_usable
+                else "the Chair produced no usable decision",
             )
         except Exception as exc:
             logger.warning("Calibration capture failed (non-fatal): %s", exc)
@@ -1144,18 +1489,7 @@ class Orchestrator:
         return result
 
     def _calc_score(self, results: dict[str, AgentResult]) -> float | None:
-        weights = {
-            "tokenomics_analyst": 0.15,
-            "onchain_analyst": 0.12,
-            "tech_infra_analyst": 0.15,
-            "governance_analyst": 0.08,
-            "competitive_intel": 0.10,
-            "field_intel": 0.05,
-            "risk_officer": 0.15,
-            "maturation_scorer": 0.10,
-            "legal_regulatory": 0.05,
-            "portfolio_manager": 0.05,
-        }
+        weights = SCORE_WEIGHTS
         total_weight = 0.0
         weighted_sum = 0.0
         for name, weight in weights.items():

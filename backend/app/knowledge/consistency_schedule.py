@@ -544,9 +544,14 @@ def start() -> asyncio.Task[None] | None:
         logger.warning("CONSISTENCY SCHEDULE: already running — not starting a second loop")
         return _task
 
+    coro = _loop()
     try:
-        _task = asyncio.create_task(_loop(), name="consistency-audit-scheduler")
+        _task = asyncio.create_task(coro, name="consistency-audit-scheduler")
     except Exception:
+        # Close the orphaned coroutine explicitly: without it Python emits a
+        # "coroutine was never awaited" RuntimeWarning at some arbitrary later
+        # GC, attributed to a line that is not where the problem is.
+        coro.close()
         _task = None
         logger.exception("CONSISTENCY SCHEDULE: failed to start — the sweep will not run")
         return None

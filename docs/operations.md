@@ -444,7 +444,135 @@ never-done item.**
 
 ---
 
-## 13. Quick reference
+## 13. The consistency audit scheduler
+
+The cross-report consistency sweep compares every persisted report against every
+other and records contradictions about the same third party. It ships with a
+policy — **every 10 new reports, or every 30 days** — that lives in one place,
+`backend/app/knowledge/consistency.py::audit_is_due`.
+
+### ⚠️ Trap 7 — an empty findings table does not mean a clean corpus
+
+Until 26 Aug 2026 the sweep had **never executed once in production**. There was
+no crontab entry, no systemd timer, no orchestrator call and no bot command;
+`consistency_findings` was empty because nothing had ever looked, and
+`consistency_audit_runs` had zero rows. The two states are indistinguishable
+from the findings table alone. Always check the run ledger:
+
+```bash
+docker compose -p aiic exec postgres psql -U committee -d committee \
+  -c "SELECT started_at, status, corpus_size, conflicts_found, findings_new, error
+      FROM consistency_audit_runs ORDER BY started_at DESC LIMIT 10;"
+```
+
+Zero rows means nothing has ever run. It does not mean nothing is wrong.
+
+### How it is driven now
+
+An in-process loop, started from the FastAPI lifespan in
+`backend/app/main.py` and implemented in
+`backend/app/knowledge/consistency_schedule.py`. It ships with the code, so
+`git pull --ff-only && docker compose up -d --build backend` is the whole
+install — there is nothing to enable on the host, and nothing that can be
+forgotten on a rebuild.
+
+| Knob | Default | What it is |
+|---|---|---|
+| `STARTUP_DELAY_SECONDS` | 300 | Wait after boot before the first tick |
+| `TICK_INTERVAL_SECONDS` | 3600 | How often the loop *asks* whether a sweep is due |
+| `SWEEP_TIMEOUT_SECONDS` | 900 | Hard ceiling on one sweep |
+| `SWEEP_VERIFY` | `True` | Check candidates against DeFiLlama / CoinGecko |
+| `SCHEDULER_ENABLED` | `True` | Master switch |
+| `ADVISORY_LOCK_KEY` | 81002027 | Postgres advisory lock (migrations use 81002026) |
+
+The tick interval is **not** the audit cadence. The loop asks hourly and
+`audit_is_due` answers "no" to nearly every one; hourly is chosen so the "10 new
+reports" half of the policy responds within an hour of the tenth report.
+
+`SWEEP_VERIFY` costs nothing from the Anthropic budget. Despite the "LLM
+adjudication" language in the module docstring, `verify_candidate` as
+implemented calls DeFiLlama and CoinGecko over httpx and nothing else — it runs
+with no `ANTHROPIC_API_KEY` at all.
+
+### It does not sweep on boot, deliberately
+
+`audit_is_due` answers `{"due": true, "reason": "no audit has ever run"}` on a
+never-swept corpus, so a boot-time sweep would fire on **every restart**. The
+backend runs `restart: unless-stopped`; a crash loop would mean a full-corpus
+scan and a burst of CoinGecko calls per restart, and CoinGecko's free tier 429s
+on the fourth call at 8-second spacing (`CONTRACTS.md` §2.7). The startup delay
+means only a container that has stayed up five minutes ever sweeps, and after
+the first successful sweep the policy itself keeps every later boot cheap.
+
+### Is it running, and what has it done?
+
+```bash
+curl -s localhost:8100/api/consistency/schedule | python3 -m json.tool
+```
+
+Two halves. `scheduler` is live in-process state — `running`, `ticks`,
+`last_tick_at`, `next_tick_at`, `last_decision`, `sweeps_run`, `sweeps_failed`,
+`skipped_locked`, `last_error`. No table can tell you whether the loop is alive.
+`runs` is the durable ledger from `consistency_audit_runs`, **including
+`status='failed'` rows**, which the scheduler writes and `run_audit` does not.
+
+A failed row is invisible to `audit_is_due`, which selects `status =
+'completed'`, so a broken sweep does not buy 30 days of silence.
+
+In the log, every line is prefixed `CONSISTENCY SCHEDULE:`. A sweep that finds
+something new logs at **WARNING**; everything else is INFO.
+
+```bash
+make logs | grep "CONSISTENCY SCHEDULE"
+```
+
+### Running one by hand
+
+```bash
+# One tick, exactly as the loop would run it — takes the advisory lock,
+# writes a failed run row if it breaks.
+curl -s -X POST localhost:8100/api/consistency/schedule/tick | python3 -m json.tool
+
+# Same, ignoring the policy. Still takes the lock.
+curl -s -X POST "localhost:8100/api/consistency/schedule/tick?force=true"
+
+# Dry run: detect and report, write nothing.
+curl -s -X POST "localhost:8100/api/consistency/audit?force=true&persist=false&verify=false"
+
+# What is due, and what the policy is
+curl -s localhost:8100/api/consistency/due
+
+# What was found
+curl -s localhost:8100/api/consistency/findings
+```
+
+`POST /api/consistency/schedule/tick` always returns 200 with an `action` of
+`swept` | `skipped` | `error`. An `error` is not swallowed: it is in the body,
+logged with a traceback, and written to `consistency_audit_runs`.
+
+### Two backends, one corpus
+
+Every sweep is taken under a Postgres advisory lock
+(`pg_try_advisory_lock(81002027)`), the same pattern the migration runner uses.
+The lock is **non-blocking**: a worker that loses it logs
+`another worker holds the audit lock ... skipping this tick` at INFO and
+returns. It is session-scoped, so a worker that dies mid-sweep releases it when
+Postgres tears the session down — there is never a stale lock to clear by hand.
+
+This also means an external driver is safe to add. A systemd timer against
+`POST /api/consistency/audit` will serialise with the in-process loop rather
+than race it, if a belt-and-braces second trigger is ever wanted.
+
+### Turning it off
+
+There is no environment variable for this yet — flip `SCHEDULER_ENABLED` to
+`False` in `backend/app/knowledge/consistency_schedule.py` and restart the
+backend. Adding a `Settings` field for it is a recommended follow-up; see the
+`agent/audit-trigger` report.
+
+---
+
+## 14. Quick reference
 
 | Situation | Command |
 |---|---|
@@ -457,4 +585,7 @@ never-done item.**
 | Added a schema change | edit `init.sql` **and** add a migration, same commit |
 | Port 5432 already in use | set `POSTGRES_HOST_PORT` in `.env` |
 | Something is wrong in the container | `make logs`, `make shell` |
+| Is the consistency sweep running? | `curl -s localhost:8100/api/consistency/schedule` |
+| Sweep now, by hand | `curl -X POST localhost:8100/api/consistency/schedule/tick` |
+| `consistency_findings` is empty | check `consistency_audit_runs` first — §13 Trap 7 |
 | Before every commit | `git diff --cached --name-only` |

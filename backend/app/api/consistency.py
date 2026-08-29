@@ -1,13 +1,20 @@
 """HTTP surface for the cross-report consistency audit.
 
-The sweep is driven from outside the container. There is no cron in the image
-and the three candidate schedulers (arq, a startup check, a systemd timer) were
-weighed in ``app/knowledge/consistency.py`` — the decision was to keep the
-"every 10 reports or monthly" *policy* here in Python, where it is testable, and
-let the scheduler be a dumb heartbeat that calls ``POST /api/consistency/audit``
-on any convenient interval. ``GET /api/consistency/due`` exists so the heartbeat
-can be cheap, and the sweep is idempotent so an over-eager heartbeat is
-harmless.
+The "every 10 reports or monthly" *policy* lives in
+``app/knowledge/consistency.py::audit_is_due``, in Python, where it is testable
+and where there is exactly one copy of it. The driver is a dumb heartbeat that
+only knows how to ask. ``GET /api/consistency/due`` exists so the heartbeat can
+be cheap, and the sweep is idempotent so an over-eager heartbeat is harmless.
+
+The heartbeat itself is **in-process**: ``app/knowledge/consistency_schedule``
+runs a guarded background loop started from the FastAPI lifespan, so it ships
+with the code instead of living in a systemd unit that the deploy
+(``git pull --ff-only``, CONTRACTS §4.7) cannot install. That module's docstring
+argues the choice out. An external timer against ``POST /api/consistency/audit``
+still works and is safe to add — the two serialise on a Postgres advisory lock.
+
+``GET /api/consistency/schedule`` reports whether the loop is alive and what it
+has done, and ``POST /api/consistency/schedule/tick`` runs one tick by hand.
 
 Nothing in this router writes to ``reports``, ``agent_outputs`` or
 ``evaluations``. Corrections append a superseding revision to
@@ -33,6 +40,9 @@ from app.knowledge.consistency import (
     run_audit,
     supersede_finding,
 )
+from app.knowledge.consistency_schedule import recent_runs as schedule_recent_runs
+from app.knowledge.consistency_schedule import run_tick as schedule_run_tick
+from app.knowledge.consistency_schedule import status as schedule_status
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +98,52 @@ async def consistency_audit(
         logger.exception("Consistency audit failed")
         raise HTTPException(status_code=500, detail="Consistency audit failed")
     return {"ran": True, **result.to_json()}
+
+
+@router.get("/schedule")
+async def consistency_schedule_status(runs: int = Query(10, ge=0, le=100)):
+    """Is the sweep actually being driven, and what has it done?
+
+    The single question this project could not answer about the consistency
+    audit for as long as it existed. Two halves, deliberately:
+
+    * ``scheduler`` — live, in-process: is the loop alive, when did it last
+      tick, what did it decide, when is the next one, what broke. No table can
+      answer "is it running".
+    * ``runs`` — durable, from ``consistency_audit_runs``: what actually
+      happened, including ``status='failed'`` rows, which the scheduler writes
+      and ``run_audit`` does not.
+
+    Both sides are non-raising by construction. A database that is down must
+    still let this endpoint say the loop is alive.
+    """
+    return {
+        "scheduler": schedule_status(),
+        "runs": await schedule_recent_runs(limit=runs) if runs else [],
+    }
+
+
+@router.post("/schedule/tick")
+async def consistency_schedule_tick(
+    force: bool = Query(False, description="Bypass the due policy (not the lock)."),
+    verify: bool | None = Query(None, description="Override the scheduler's verify default."),
+):
+    """Run one scheduler tick right now, exactly as the loop would.
+
+    Distinct from ``POST /api/consistency/audit``, which calls ``run_audit``
+    directly: this goes through the advisory lock and the failure bookkeeping,
+    so it is both the operator's "do it now" lever and the way the scheduled
+    path is exercised without waiting out ``TICK_INTERVAL_SECONDS``.
+
+    ``force`` skips the policy check but never the lock — a hand-run sweep still
+    must not race a scheduled one.
+
+    ``run_tick`` never raises, so this is always a 200 carrying an ``action`` of
+    ``swept`` | ``skipped`` | ``error``. That is not a swallowed failure: a
+    failed sweep is reported in the body, logged with its traceback, and written
+    to ``consistency_audit_runs`` as ``status='failed'``.
+    """
+    return await schedule_run_tick(force=force, verify=verify)
 
 
 @router.get("/findings")

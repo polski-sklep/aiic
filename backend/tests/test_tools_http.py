@@ -537,3 +537,111 @@ class NotionToolsTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CategoryPeersTest(unittest.IsolatedAsyncioTestCase):
+    """`get_category_peers` exists to stop agents inventing market share.
+
+    So the tests are about the two ways it could reintroduce the defect it was
+    added to fix: matching the wrong category quietly, and publishing a share
+    whose denominator nobody named.
+    """
+
+    PROTOCOLS = [
+        {"name": "Aave", "slug": "aave", "category": "Lending", "tvl": 61_900_000_000.0,
+         "mcap": 4_000_000_000.0, "change_7d": 1.5, "chains": ["Ethereum", "Base"]},
+        {"name": "Morpho", "slug": "morpho", "category": "Lending", "tvl": 9_000_000_000.0,
+         "mcap": 500_000_000.0, "change_7d": -2.0, "chains": ["Ethereum"]},
+        {"name": "Shell", "slug": "shell", "category": "Lending", "tvl": None,
+         "mcap": None, "change_7d": None, "chains": []},
+        {"name": "Uniswap", "slug": "uniswap", "category": "Dexs", "tvl": 5_000_000_000.0,
+         "mcap": 6_000_000_000.0, "change_7d": 0.4, "chains": ["Ethereum"]},
+    ]
+
+    def setUp(self):
+        from app.tools import defillama
+
+        defillama._reset_protocols_cache()
+        self.addCleanup(defillama._reset_protocols_cache)
+
+    async def test_an_unknown_category_is_not_fuzzy_matched(self):
+        """A peer set drawn from the wrong category is invisible once returned.
+
+        "lend" is not "Lending". Guessing would produce an answer that looks
+        exactly as authoritative as a correct one, which is the market-share
+        defect one layer down. The valid names come back instead.
+        """
+        from app.tools import defillama
+
+        with mock_http(json_response(self.PROTOCOLS)):
+            result = await defillama.get_category_peers({"category": "lend"})
+
+        self.assertEqual(result["failure"], "not_found")
+        self.assertIn("Lending", result["error"])
+        self.assertIn("Dexs", result["error"])
+
+    async def test_the_category_is_matched_case_insensitively_but_reported_exactly(self):
+        from app.tools import defillama
+
+        with mock_http(json_response(self.PROTOCOLS)):
+            result = await defillama.get_category_peers({"category": "lending"})
+
+        self.assertEqual(result["category"], "Lending")
+
+    async def test_it_reports_the_total_and_its_denominator_and_computes_no_share(self):
+        """The rule in fetch_canonical_facts: a share is a denominator we chose.
+
+        The tool therefore hands back the peer TVLs and the total as separate
+        figures, says in prose what the total is a sum over, and never divides.
+        A key called anything like 'share' would be the defect returning.
+        """
+        from app.tools import defillama
+
+        with mock_http(json_response(self.PROTOCOLS)):
+            result = await defillama.get_category_peers({"category": "Lending"})
+
+        self.assertEqual(result["category_tvl_usd"], 70_900_000_000.0)
+        self.assertNotIn("share", " ".join(result).casefold())
+        self.assertIn("2 of 3", result["denominator"])
+        self.assertIn("not the size of the Lending market", result["denominator"])
+
+    async def test_a_protocol_with_no_published_tvl_is_counted_but_never_zeroed(self):
+        """None is not zero, per CanonicalDefiFacts.
+
+        'Shell' is listed in Lending and has no TVL series. It must not be
+        ranked as worth nothing, and it must not be summed as nothing — but the
+        category still contains it, so protocol_count says three while the
+        total is over two.
+        """
+        from app.tools import defillama
+
+        with mock_http(json_response(self.PROTOCOLS)):
+            result = await defillama.get_category_peers({"category": "Lending"})
+
+        self.assertEqual(result["protocol_count"], 3)
+        self.assertEqual([peer["name"] for peer in result["peers"]], ["Aave", "Morpho"])
+
+    async def test_the_protocol_list_is_fetched_once_per_run_not_once_per_agent(self):
+        """`/protocols` is ~8.7 MB. Several agents ask for peers in one run."""
+        from app.tools import defillama
+
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(200, json=self.PROTOCOLS)
+
+        with mock_http(handler):
+            await defillama.get_category_peers({"category": "Lending"})
+            await defillama.get_category_peers({"category": "Dexs"})
+
+        self.assertEqual(len(calls), 1)
+
+    async def test_defillama_being_down_is_a_gap_not_an_empty_category(self):
+        from app.tools import defillama
+
+        with mock_http(json_response({}, status_code=503)):
+            result = await defillama.get_category_peers({"category": "Lending"})
+
+        self.assertEqual(result["failure"], "unavailable")
+        self.assertNotIn("Tool execution failed", result["error"])

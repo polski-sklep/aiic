@@ -237,13 +237,24 @@ config; go through `get_settings()`.
 
 Tools register through `ToolRegistry.register(definition, func)` from a
 module-level `register(registry)` function, wired in
-`tools/registry.py::_register_all_tools`. Eleven tools are live:
-`get_price`, `get_token_info`, `get_tvl`, `get_protocol_fees`, `get_klines`,
-`get_orderbook_depth`, `compute_technical_levels`, `web_search`,
-`search_twitter`, `search_notes`, `read_note`.
+`tools/registry.py::_register_all_tools`. Thirteen tools are live:
+`get_price`, `get_token_info`, `get_tvl`, `get_protocol_fees`,
+`get_category_peers`, `get_klines`, `get_orderbook_depth`,
+`compute_technical_levels`, `web_search`, `search_twitter`, `search_notes`,
+`read_note`, `semantic_search_notes`.
+
+This section said eleven until 29 Aug 2026 and had been wrong since
+`agent/retrieval` merged: `semantic_search_notes` has been registered, and in
+`BaseAgent._base_tools`, throughout. `get_category_peers` is the thirteenth,
+added the same day — see `docs/reviews/crypto-data-tooling-2026-08-29.md`.
+`tests/test_tool_registry.py::LiveRegistryTest` asserts the exact roster, so
+this list is checkable rather than merely asserted.
 
 Etherscan, Dune, GitHub, Snapshot, Tally, Safe and Token Terminal are **not
-built**. Do not document them as present.
+built**. Do not document them as present. Token Terminal was re-assessed on
+29 Aug 2026 and deliberately not built: its REST API is key-only on a
+custom-priced plan, and the market-share question it was wanted for is answered
+by `get_category_peers` for nothing.
 
 ---
 

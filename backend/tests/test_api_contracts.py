@@ -87,12 +87,23 @@ class OpenApiSchemaTest(unittest.TestCase):
         self.assertEqual(known.json()["detail"], unknown.json()["detail"])
 
     def test_the_tool_listing_endpoint_is_unaffected(self):
-        """Listing was never broken by QA-040 and is not behind the gate."""
+        """Listing was never broken by QA-040 and is not behind the gate.
+
+        This asserted a hardcoded count of 12 until 29 Aug 2026, which made
+        every tool addition look like an API-contract regression and said
+        nothing about the contract. The invariant that matters is that the
+        endpoint exposes the *whole* registry, ungated and unfiltered — a
+        silently truncated listing is the failure worth catching, and a count
+        cannot see it. ``LiveRegistryTest`` is where the roster itself is
+        pinned.
+        """
+        from app.tools import get_tool_registry
+
         response = self.client.get("/api/tools")
         self.assertEqual(response.status_code, 200)
         names = {tool["name"] for tool in response.json()["tools"]}
         self.assertIn("get_price", names)
-        self.assertEqual(len(names), 12)
+        self.assertEqual(names, set(get_tool_registry().tool_names))
 
 
 class PathParameterValidationTest(unittest.TestCase):

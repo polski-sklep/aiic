@@ -214,6 +214,12 @@ class LiveRegistryTest(unittest.TestCase):
     agent gets it -- this test is the thing that noticed, and CONTRACTS 3.6
     still says eleven.
 
+    A thirteenth, ``get_category_peers``, was added on 29 Aug 2026 after the
+    data-source review in docs/reviews/crypto-data-tooling-2026-08-29.md.
+    CompetitiveIntel is scored on "market share within category" and every tool
+    it had took a single protocol slug, so it had no peer set to compare
+    against -- see the comment above the tool in tools/defillama.py.
+
     Pure registration check: constructs no clients and makes no calls.
     """
 
@@ -230,9 +236,9 @@ class LiveRegistryTest(unittest.TestCase):
         "search_notes",
         "read_note",
     }
-    EXPECTED = CONTRACTED_ELEVEN | {"semantic_search_notes"}
+    EXPECTED = CONTRACTED_ELEVEN | {"semantic_search_notes", "get_category_peers"}
 
-    def test_exactly_the_contracted_twelve_tools_are_registered(self):
+    def test_exactly_the_registered_roster_is_the_expected_one(self):
         from app.tools import get_tool_registry
 
         self.assertEqual(set(get_tool_registry().tool_names), self.EXPECTED)

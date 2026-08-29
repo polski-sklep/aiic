@@ -97,7 +97,7 @@ Working:
 - FastAPI backend, async Postgres, Redis
 - LLM router (Claude primary; OpenAI provider available). Model tiers: Opus 4.8 (STRONG), Sonnet 4.6 (BALANCED), Haiku 4.5 (FAST)
 - `BaseAgent` with tool-calling loop; all fifteen agents implemented with persona files
-- Tool registry, eleven tools registered
+- Tool registry, thirteen tools registered
 - Calibration loop: every recommendation captured with entry price and BTC/ETH benchmarks; manual re-pricing checkpoints
 - API: `/api/evaluate`, `/api/calibration`, `/api/tools`, `/api/projects`, `/api/knowledge`, `/api/memory`, `/api/reports`, `/health`
 
@@ -111,13 +111,21 @@ Pending: transcription pipeline; Etherscan and Dune tools; a background job runn
 
 ## Tool registry
 
-Tools live under `backend/app/tools/` and self-register into `tools/registry.py`. Eleven are currently registered:
+Tools live under `backend/app/tools/` and self-register into `tools/registry.py`. Thirteen are currently registered:
 
 - **Market data** (CoinGecko) - `get_price`, `get_token_info`
-- **DeFi** (DeFiLlama) - `get_tvl`, `get_protocol_fees`
+- **DeFi** (DeFiLlama) - `get_tvl`, `get_protocol_fees`, `get_category_peers`
 - **Technical** (Binance public API) - `get_klines`, `get_orderbook_depth`, `compute_technical_levels`
 - **Research** - `web_search` (Brave), `search_twitter`
 - **Notion** - `search_notes`, `read_note`
+- **Retrieval** - `semantic_search_notes` (in `BaseAgent._base_tools`, so every agent has it)
+
+`get_category_peers` ranks a DeFiLlama category by TVL so a project can be
+compared against its actual peer set. It returns the peers and the category
+total as separate figures and computes no market share: the denominator it
+would have used is returned in prose instead, because a share is an arithmetic
+result whose value is decided by a denominator we would be choosing. See the
+comment above it in `tools/defillama.py`.
 
 Tools without configured keys are tagged unavailable rather than removed; the calling agent notes the gap in its output. CoinGecko calls retry with backoff on 429 and will use `COINGECKO_API_KEY` if set (demo tier, 30 calls/min).
 

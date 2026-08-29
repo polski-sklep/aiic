@@ -52,7 +52,7 @@ class CompetitiveIntel(BaseAgent):
         "You identify whether the project is a category leader, fast follower, or late entrant."
     )
     tier = ModelTier.BALANCED
-    tool_names = ["get_price", "get_tvl", "get_protocol_fees", "web_search"]
+    tool_names = ["get_price", "get_tvl", "get_protocol_fees", "get_category_peers", "web_search"]
 
 
 class FieldIntel(BaseAgent):

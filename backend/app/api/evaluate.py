@@ -11,7 +11,13 @@ from sqlalchemy import func, select
 
 from app.database import get_db
 from app.models import Project, Evaluation, AgentOutput, Report
-from app.agents.orchestrator import Orchestrator
+from app.agents.orchestrator import (
+    NO_REPORT_STATUSES,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_RUNNING,
+    Orchestrator,
+)
 
 router = APIRouter(prefix="/api", tags=["evaluate"])
 logger = logging.getLogger(__name__)
@@ -81,6 +87,30 @@ async def _persist_report(
     return report
 
 
+def _no_report_reason(run_status: str, eval_result: dict) -> str:
+    """One line saying why a finished run has no report, for `evaluations.error`.
+
+    Deliberately short and stable: it goes in a text column that a human reads
+    in `psql`, and the structured detail is already in `run_health` and in the
+    Report Writer's own `agent_outputs` row.
+    """
+    health = eval_result.get("run_health") or {}
+    reason = health.get("report_failure_reason") if isinstance(health, dict) else None
+    if run_status == "gate_failed":
+        failures = (eval_result.get("gate_result") or {}).get("blocking_failures") or []
+        joined = "; ".join(str(f) for f in failures) if failures else "no detail recorded"
+        return f"Structural gate rejected this project before any agent ran: {joined}"
+    detail = {
+        "call_failed": "the Report Writer's model call failed",
+        "unparseable": "the Report Writer's response could not be parsed",
+        "no_sections": "the Report Writer returned an object with no sections",
+    }.get(str(reason), f"the Report Writer produced no report ({reason})")
+    return (
+        f"No report was produced: {detail}. The other agents' outputs are "
+        f"persisted and the run can be re-adjudicated."
+    )
+
+
 class EvaluateRequest(BaseModel):
     project_name: str
     ticker: str | None = None
@@ -129,7 +159,7 @@ async def trigger_evaluation(
     # Create evaluation record
     evaluation = Evaluation(
         project_id=project.id,
-        status="running",
+        status=STATUS_RUNNING,
         triggered_by="api",
         started_at=datetime.now(timezone.utc),
     )
@@ -190,13 +220,42 @@ async def trigger_evaluation(
         # `agent_outputs` on every request.
         await _persist_report(db, evaluation, eval_result)
 
-        evaluation.status = "completed"
+        # HONOUR THE PIPELINE'S OWN STATUS INSTEAD OF ASSERTING SUCCESS.
+        #
+        # This used to be the literal "completed", written on every path that
+        # did not raise. Two things it was wrong about, both measurable in
+        # production:
+        #
+        #  * The Report Writer failing does not raise — the orchestrator
+        #    substitutes a stub and carries on. Five rows in the live database
+        #    have no `sections` and say `completed`.
+        #  * The structural gate returns `status: "gate_failed"` in its result
+        #    dict and returns normally. That value was discarded here.
+        #
+        # `Orchestrator.evaluate` now decides the status; this writes it down.
+        # An unrecognised value degrades safely: everything downstream tests
+        # `== "completed"`, so anything else is treated as not-a-success.
+        run_status = str(eval_result.get("status") or STATUS_COMPLETED)
+        evaluation.status = run_status
+        evaluation.run_health = _jsonable(eval_result.get("run_health"))
         evaluation.completed_at = datetime.now(timezone.utc)
+
+        # `error` is the human-readable why. It was previously written only on
+        # the exception path, which is why the five bad rows carry no trace of
+        # what went wrong beyond a buried agent_outputs row.
+        if run_status in NO_REPORT_STATUSES:
+            evaluation.error = _no_report_reason(run_status, eval_result)
+            logger.error(
+                "Evaluation %s for %s finished without a report: %s",
+                evaluation_id,
+                req.project_name,
+                evaluation.error,
+            )
 
         return EvaluateResponse(
             evaluation_id=evaluation_id,
             project_id=str(project.id),
-            status="completed",
+            status=run_status,
             project_name=req.project_name,
             scores=eval_result.get("scores", {}),
             overall_score=eval_result.get("overall_score"),
@@ -205,7 +264,7 @@ async def trigger_evaluation(
         )
 
     except Exception as e:
-        evaluation.status = "failed"
+        evaluation.status = STATUS_FAILED
         evaluation.error = str(e)
         evaluation.completed_at = datetime.now(timezone.utc)
         logger.exception("Evaluation failed for project %s", req.project_name)
@@ -241,6 +300,7 @@ async def get_evaluation(
         "project_id": str(evaluation.project_id),
         "status": evaluation.status,
         "error": evaluation.error,
+        "run_health": evaluation.run_health,
         "started_at": evaluation.started_at,
         "completed_at": evaluation.completed_at,
         "agent_outputs": [

@@ -23,7 +23,28 @@ alembic==1.14.1          # pinned but unconfigured; see backend/migrations/READM
 pgvector==0.3.6
 
 # --- LLM providers ---
-anthropic==0.42.0
+# 0.42.0 -> 0.125.0, forced by the Opus 5 / Sonnet 5 migration and NOT
+# optional. In 0.42.0 the response type `anthropic.types.ContentBlock` is
+# `Union[TextBlock, ToolUseBlock]` — there is no ThinkingBlock — so a response
+# containing a `thinking` block fails pydantic validation inside the SDK,
+# before any of our code runs:
+#
+#   >>> Message.model_validate({... 'content': [{'type':'thinking', ...}]})
+#   ValidationError: 6 validation errors for Message
+#     content.0.TextBlock.type  Input should be 'text' ... input_value='thinking'
+#
+# Opus 5 and Sonnet 5 run adaptive thinking when the `thinking` parameter is
+# omitted, so on 0.42.0 the model-id swap alone would raise that ValidationError
+# on essentially every call. `BaseAgent.run` catches it in its blanket handler
+# and records the agent as errored — fifteen errored agents, no evaluation, and
+# a stack trace that names pydantic rather than the model change that caused it.
+#
+# 0.125.0 is the last 0.x release. It types `thinking` and `output_config` as
+# real keyword arguments and parses ThinkingBlock. Deliberately NOT 1.x: that
+# is a major migration (httpx2 in place of httpx, awaited async raw responses,
+# removed deprecated parameters) and belongs in its own change, not inside a
+# model upgrade whose whole purpose is to make one behavioural delta legible.
+anthropic==0.125.0
 openai==1.58.1           # embeddings only (text-embedding-3-small)
 
 # --- HTTP / models ---

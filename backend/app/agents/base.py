@@ -299,10 +299,18 @@ You are evaluating: {project}"""
 
                 # Process tool calls
                 # Add assistant message with tool calls
+                # `content_blocks` is the provider's own rendering of this
+                # turn, carried back untouched. Since the committee moved to
+                # thinking models the turn contains more than text and tool
+                # calls, and the model wants its own reasoning handed back
+                # unmodified on the next round. Empty for any provider that
+                # does not set it, in which case the provider rebuilds the turn
+                # from the two fields above exactly as before.
                 messages.append(LLMMessage(
                     role="assistant",
                     content=response.content,
                     tool_calls=response.tool_calls,
+                    content_blocks=response.content_blocks,
                 ))
 
                 for tc in response.tool_calls:

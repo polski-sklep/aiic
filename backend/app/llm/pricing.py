@@ -44,9 +44,21 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 # PUBLISHED PRICE LIST — this is a copy of someone else's price list.
 #
-#   Source: Anthropic API pricing reference, "Current Models" table
-#           https://docs.claude.com/en/docs/about-claude/pricing
-#   Taken:  2026-08-27
+#   Source: Anthropic API pricing reference, "Model pricing" table
+#           https://platform.claude.com/docs/en/about-claude/pricing
+#           (the old docs.claude.com path now 302s here)
+#   Taken:  2026-08-27; re-read in full 2026-08-30 when the committee moved to
+#           Opus 5 / Sonnet 5. All five rows below were read off that page on
+#           2026-08-30 — the three pre-existing ones were re-checked, not
+#           assumed, and are unchanged. The two cache multipliers were re-read
+#           from the same page's "Prompt caching" table on the same date.
+#
+# One live note worth carrying, because it is the kind of thing that silently
+# invalidates a rate: Sonnet 5's $2/$10 was announced as introductory pricing
+# through 2026-08-31. The page now states that this is the standard price and
+# that the scheduled 2026-09-01 rise to $3/$15 WILL NOT happen. If a future
+# reader finds Sonnet costs running ~50% over this table, that reversal being
+# reversed again is the first thing to check.
 #
 # These are LIST prices in USD per million tokens, not amounts billed. They
 # change without any signal reaching this repository, so they carry the date
@@ -56,15 +68,29 @@ from dataclasses import dataclass, field
 # Add a model by adding a row. Do NOT add a row you have not read off the
 # pricing page — a wrong rate here is invisible and permanent, whereas a
 # missing row is loud (see `RunCost.unpriced_agents`).
+#
+# NOTHING IS EVER REMOVED FROM THIS TABLE.
+# The pipeline runs on whatever `config.py` currently names, but this table
+# prices *history*: 20 persisted evaluations were run on `claude-opus-4-8` and
+# `claude-sonnet-4-6` and must stay priceable forever. Deleting a superseded
+# row does not clean anything up — it silently converts every evaluation that
+# used it into an unpriced run, which is precisely the failure the Plasma
+# (2026-04-12) record already demonstrates for the retired April ids.
 # ---------------------------------------------------------------------------
 
-PRICES_TAKEN_ON = "2026-08-27"
-PRICES_SOURCE = "https://docs.claude.com/en/docs/about-claude/pricing"
+PRICES_TAKEN_ON = "2026-08-30"
+PRICES_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing"
 
 #: model id -> (input $/MTok, output $/MTok)
 USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    # Current — what the committee runs on from 2026-08-30.
+    "claude-opus-5": (5.00, 25.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    # Superseded, retained. Every evaluation persisted before 2026-08-30 is
+    # priced from these two rows.
     "claude-opus-4-8": (5.00, 25.00),
     "claude-sonnet-4-6": (3.00, 15.00),
+    # Still current, still configured as the FAST tier.
     "claude-haiku-4-5": (1.00, 5.00),
 }
 

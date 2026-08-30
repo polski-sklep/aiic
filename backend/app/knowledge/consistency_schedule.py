@@ -1,7 +1,8 @@
 """The thing that makes the cross-report consistency sweep actually happen.
 
 ``knowledge/consistency.py`` has held a complete, working sweep and a complete,
-working policy — "every 10 reports or every 30 days", in ``audit_is_due`` —
+working policy — "every 10 reports, or the 2nd of each month", in
+``audit_is_due`` —
 since it was written. In production it had **never executed once**: no crontab
 entry, no systemd timer, no orchestrator call, no bot command. The findings
 ledger was empty because nothing had ever looked, which is indistinguishable
@@ -70,7 +71,7 @@ Four things this has to get right, each of which has bitten this project
    lock goes with it. There is no stale lock to clear by hand, ever.
 
 3. **The policy is asked, never restated.** Nothing in this file knows what 10
-   or 30 mean. The tick calls ``audit_is_due()`` and believes the answer. The
+   or "the 2nd" mean. The tick calls ``audit_is_due()`` and believes the answer. The
    duplicate-policy failure is what D15's branch existed to remove; a scheduler
    with its own copy of the cadence is that failure with a longer fuse, because
    the two copies would only disagree a month after someone edited one.
@@ -108,7 +109,7 @@ first, then the normal tick cadence begins.
   this file.
 * The belt-and-braces answer to the restart loop is not the delay anyway — it is
   ``audit_is_due`` itself. The first successful sweep writes a completed run
-  row, and every restart after that is told "not due" for the next 30 days. The
+  row, and every restart after that is told "not due" until the next 2nd. The
   policy is what makes repeated boots cheap; the delay just covers the window
   before the first one lands.
 """

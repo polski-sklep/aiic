@@ -1,6 +1,6 @@
 """HTTP surface for the cross-report consistency audit.
 
-The "every 10 reports or monthly" *policy* lives in
+The "every 10 reports, or the 2nd of each month" *policy* lives in
 ``app/knowledge/consistency.py::audit_is_due``, in Python, where it is testable
 and where there is exactly one copy of it. The driver is a dumb heartbeat that
 only knows how to ask. ``GET /api/consistency/due`` exists so the heartbeat can
@@ -29,8 +29,9 @@ from pydantic import BaseModel, Field
 
 from app.knowledge.consistency import (
     Status,
-    AUDIT_EVERY_N_DAYS,
+    AUDIT_DAY_OF_MONTH,
     AUDIT_EVERY_N_REPORTS,
+    AUDIT_TIMEZONE,
     RECHECK_INTERVAL_HOURS,
     WARNING_CHAR_BUDGET,
     active_findings,
@@ -39,6 +40,7 @@ from app.knowledge.consistency import (
     render_active_warnings,
     run_audit,
     supersede_finding,
+    sweep_window_start,
 )
 from app.knowledge.consistency_schedule import recent_runs as schedule_recent_runs
 from app.knowledge.consistency_schedule import run_tick as schedule_run_tick
@@ -63,14 +65,21 @@ class CorrectionRequest(BaseModel):
 async def consistency_due():
     """Is a sweep due? Cheap enough for a scheduler to poll.
 
-    The policy — 10 new reports or 30 days — lives in Python rather than in a
-    crontab so that changing it is a code change with a test, not an
-    undiscoverable edit on a VPS.
+    The policy — 10 new reports, or the 2nd of each month — lives in Python
+    rather than in a crontab so that changing it is a code change with a test,
+    not an undiscoverable edit on a VPS.
+
+    ``policy`` is reported so an operator reading this endpoint sees the rule
+    that actually produced ``due``. It is assembled from the constants rather
+    than written out here: a hand-typed policy block is a second copy of the
+    policy (D15), and the copy that rots is always the one nobody executes.
     """
     result = await audit_is_due()
     result["policy"] = {
         "every_n_reports": AUDIT_EVERY_N_REPORTS,
-        "every_n_days": AUDIT_EVERY_N_DAYS,
+        "day_of_month": AUDIT_DAY_OF_MONTH,
+        "timezone": AUDIT_TIMEZONE,
+        "window_opened": sweep_window_start().isoformat(),
     }
     return result
 

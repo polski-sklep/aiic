@@ -107,7 +107,7 @@ class PolicyIsNotDuplicatedTest(SchedulerTestCase):
     """D15's branch existed to delete a second copy of a rule. Not growing one
     back is the single most important property of this module.
 
-    A scheduler carrying its own "10 reports or 30 days" would agree with
+    A scheduler carrying its own "10 reports or the 2nd" would agree with
     `audit_is_due` on the day it was written and diverge silently the first time
     either was edited — and the divergence would only surface a month later, as
     a sweep that fired at the wrong time or not at all.
@@ -121,7 +121,7 @@ class PolicyIsNotDuplicatedTest(SchedulerTestCase):
         )
         # The policy constants exist and are exported by consistency.py. The
         # scheduler must not import, mirror or re-derive them.
-        for name in ("AUDIT_EVERY_N_REPORTS", "AUDIT_EVERY_N_DAYS"):
+        for name in ("AUDIT_EVERY_N_REPORTS", "AUDIT_DAY_OF_MONTH", "AUDIT_TIMEZONE"):
             self.assertNotIn(
                 name, code,
                 f"{name} is referenced in the scheduler — the policy has two homes again",
@@ -130,7 +130,7 @@ class PolicyIsNotDuplicatedTest(SchedulerTestCase):
     async def test_a_not_due_answer_is_obeyed_even_though_the_corpus_grew(self):
         """The scheduler has no opinion. `audit_is_due` said no, so: no."""
         due = mock.AsyncMock(return_value={
-            "due": False, "reason": "3/10 new reports, 2/30 days", "corpus_size": 14,
+            "due": False, "reason": "3/10 new reports; last sweep inside the window", "corpus_size": 14,
         })
         run = mock.AsyncMock()
         with mock.patch.object(sched, "audit_is_due", due), \

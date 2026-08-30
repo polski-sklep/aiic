@@ -488,9 +488,23 @@ def _loads(text: str) -> tuple[object, bool]:
     was caught by ``run``'s blanket handler — recording the agent as *errored*
     rather than as having produced unparseable text, a different and more
     alarming signal for the orchestrator.
+
+    Control characters, and why ``strict=False``. Strict JSON forbids a literal
+    newline inside a string, and models write them: a section that formats a
+    bullet list puts real newlines in the value rather than ``\\n`` escapes. The
+    Plasma run of 2026-08-30 died exactly there — 73,956 characters of complete,
+    well-formed report, rejected at char 6,386 on
+
+        "... ~$195M at spot [55]. 26 days from case date.<LF>• 2026-09-25 ..."
+
+    ``strict=False`` accepts control characters inside strings and changes
+    nothing else: structure, types and escaping are still validated, so
+    genuinely malformed output still fails. The alternative — telling the model
+    again not to emit newlines — is a rule that has to hold across fifteen
+    agents on every run, and this one did not.
     """
     try:
-        return json.loads(text), True
+        return json.loads(text, strict=False), True
     except (ValueError, TypeError, RecursionError):
         return None, False
 

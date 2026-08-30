@@ -124,14 +124,16 @@ fingerprint. There is no UPDATE anywhere in this file.
 """
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import logging
 import re
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Iterable, Literal, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import text as sql_text
 
@@ -147,7 +149,8 @@ __all__ = [
     "CANONICAL_METRICS",
     "RECHECK_INTERVAL_HOURS",
     "AUDIT_EVERY_N_REPORTS",
-    "AUDIT_EVERY_N_DAYS",
+    "AUDIT_DAY_OF_MONTH",
+    "AUDIT_TIMEZONE",
     "WARNING_CHAR_BUDGET",
     "extract_claims",
     "detect_conflicts",
@@ -160,6 +163,7 @@ __all__ = [
     "active_findings",
     "render_active_warnings",
     "audit_is_due",
+    "sweep_window_start",
     "fingerprint_of",
 ]
 
@@ -168,9 +172,45 @@ __all__ = [
 # Policy knobs
 # ---------------------------------------------------------------------------
 
-#: "either every 10 reports or monthly" — Jacob's requirement, verbatim.
+#: "either every 10 reports or on the 2nd of each month" — Jacob's requirement.
+#:
+#: The two arms answer different questions and both are wanted. The report arm
+#: is a *burst* trigger: ten new evaluations is enough new prose that waiting
+#: out the calendar would leave contradictions unflagged for weeks. The calendar
+#: arm is the *floor*: a quiet month still gets swept.
 AUDIT_EVERY_N_REPORTS = 10
-AUDIT_EVERY_N_DAYS = 30
+
+#: The calendar arm fires on this day of the month.
+#:
+#: This used to be ``AUDIT_EVERY_N_DAYS = 30``, a rolling interval. A rolling
+#: interval drifts — a sweep that ran late pushes the next one later still, so
+#: after a few cycles "monthly" lands on an arbitrary and moving date. A fixed
+#: day does not drift, and it is the thing a human can actually predict.
+#:
+#: Days 1–28 only. Nothing here breaks on 29–31 (`_day_in_month` clamps to the
+#: last day of a short month) but the *meaning* would: "the 31st" would silently
+#: mean the 28th in February, and a sweep on Feb 28 followed by one on Mar 31 is
+#: not a monthly cadence. Keep it inside 1–28 and the clamp never engages.
+AUDIT_DAY_OF_MONTH = 2
+
+#: The calendar the day above is read in.
+#:
+#: **Europe/Warsaw, not UTC, and the choice is deliberate.** ``started_at`` is
+#: timestamptz and the server runs UTC, so UTC is the cheaper option and the
+#: obvious one. It is still the wrong one, for one reason: a rolling interval is
+#: a *duration* and durations have no timezone, but "the 2nd of the month" is a
+#: *calendar* statement, and a calendar is a human artefact. The only person who
+#: will ever ask "did it run on the 2nd?" is Jacob, and he is in Warsaw. Reading
+#: the day in UTC would mean that for the first hour or two of the 2nd as he
+#: experiences it, the system considers it the 1st and reports "not due" —
+#: divergence between the machine's answer and the question that was asked.
+#:
+#: Storage and comparison stay in UTC throughout. This zone is used for exactly
+#: one thing: deciding which calendar day it is. DST cannot bite: Europe's
+#: transitions fall on the last Sunday of March and October, never the 2nd, and
+#: the spring-forward gap is 02:00→03:00 local, so a midnight boundary is never
+#: inside a skipped hour.
+AUDIT_TIMEZONE = "Europe/Warsaw"
 
 #: Gap between the first check and the second. Long enough that a genuinely
 #: volatile metric will have moved, short enough that a monthly sweep completes
@@ -1991,8 +2031,8 @@ async def render_active_warnings(char_budget: int = WARNING_CHAR_BUDGET) -> str:
 # * **An API endpoint driven by a dumb external heartbeat — chosen.**
 #
 # The point of the choice is where the *policy* lives. ``audit_is_due`` below
-# holds "every 10 reports or monthly" in Python, next to the data it counts, and
-# is testable without a scheduler. The scheduler therefore does not need to know
+# holds "every 10 reports, or the 2nd of each month" in Python, next to the data
+# it counts, and is testable without a scheduler. The scheduler therefore does not need to know
 # the policy: it asks on any convenient interval and this function decides. That
 # still holds and nothing about it changed.
 #
@@ -2020,8 +2060,113 @@ async def render_active_warnings(char_budget: int = WARNING_CHAR_BUDGET) -> str:
 # boot rather than skip the month.
 
 
+def _audit_timezone() -> tzinfo:
+    """``AUDIT_TIMEZONE`` as a tzinfo, degrading to UTC rather than raising.
+
+    ``zoneinfo`` reads the system tz database, which is a file on disk and not a
+    guarantee. ``python:3.12-slim`` ships one today; a future base image, or a
+    distroless rebuild, might not. The failure mode matters: this function is
+    called from ``audit_is_due``, which the scheduler calls on every tick, and a
+    raise there means the tick logs an error and **no sweep ever runs again**.
+    That is precisely the silent-machinery failure this whole subsystem exists
+    to end, so a missing tz database degrades to UTC — the sweep still fires on
+    the 2nd, just read off a different clock — and says so loudly in the log.
+    """
+    try:
+        return ZoneInfo(AUDIT_TIMEZONE)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        logger.warning(
+            "CONSISTENCY: timezone %r is unavailable (no tz database?) — reading "
+            "the calendar day in UTC instead. The sweep still fires on day %d; "
+            "the boundary just moves by the UTC offset.",
+            AUDIT_TIMEZONE, AUDIT_DAY_OF_MONTH,
+        )
+        return timezone.utc
+
+
+def _day_in_month(year: int, month: int) -> int:
+    """``AUDIT_DAY_OF_MONTH``, clamped to a day that exists in this month.
+
+    Only engages for a misconfigured day of 29–31; see the constant's note.
+    """
+    return min(AUDIT_DAY_OF_MONTH, calendar.monthrange(year, month)[1])
+
+
+def sweep_window_start(now: datetime | None = None) -> datetime:
+    """Midnight on the most recent ``AUDIT_DAY_OF_MONTH``, at or before ``now``.
+
+    This is the whole calendar policy, and everything the trigger needs follows
+    from asking one question against it: **has a completed sweep started since
+    this instant?** Not "is today the 2nd", not a counter, not a last-fired
+    marker — a boundary and a comparison, which is why the awkward cases are not
+    special-cased anywhere below. They just fall out:
+
+    * **Fires once on the 2nd, not 24 times.** The driver ticks hourly. The
+      first tick of the 2nd finds the newest completed run older than this
+      boundary and sweeps; that sweep writes a ``started_at`` *after* the
+      boundary, so every later tick that day compares against its own result and
+      answers no. The sweep's own record is what closes the window — there is no
+      separate state to keep in sync with it, and nothing to reset.
+
+    * **Does not re-fire on the 3rd.** The boundary is still the 2nd of this
+      month until the 2nd of next month, so the run from the 2nd keeps
+      satisfying it for the rest of the month.
+
+    * **A missed day fires late rather than skipping the month.** If the backend
+      is down for all of the 2nd and comes back on the 5th, the boundary is
+      *still* the 2nd of this month and the newest run is still from last month,
+      so the first tick after boot sweeps. A trigger that matched on
+      ``day == 2`` would have skipped silently until October, which is strictly
+      worse: a sweep that runs three days late is a slightly stale sweep, while
+      a sweep that never runs is the empty-``consistency_findings`` failure that
+      `consistency_schedule` was written to fix. Catch-up is the default here,
+      and it is deliberate.
+
+    Returned in UTC, because that is what it is compared against.
+    """
+    tz = _audit_timezone()
+    local = (now or datetime.now(timezone.utc)).astimezone(tz)
+
+    if local.day >= _day_in_month(local.year, local.month):
+        anchor = local
+    else:
+        # Before the day has arrived this month, the open window is last
+        # month's. `replace(day=1) - 1 day` lands on the last day of the
+        # previous month and handles January and leap years for free.
+        anchor = local.replace(day=1) - timedelta(days=1)
+
+    start_local = anchor.replace(
+        day=_day_in_month(anchor.year, anchor.month),
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    return start_local.astimezone(timezone.utc)
+
+
+def _next_window_start(now: datetime | None = None) -> datetime:
+    """The boundary after the current one — i.e. when the sweep next comes due.
+
+    Reporting-only. Nothing decides anything on this; it exists so
+    ``/api/consistency/due`` can answer "then when?" without the caller doing
+    calendar arithmetic of its own, which is how a second copy of the policy
+    gets born (D15).
+    """
+    tz = _audit_timezone()
+    current = sweep_window_start(now).astimezone(tz)
+    # First of the following month, then the configured day within it.
+    following = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return following.replace(
+        day=_day_in_month(following.year, following.month),
+        hour=0, minute=0, second=0, microsecond=0,
+    ).astimezone(timezone.utc)
+
+
+def _local_day(moment: datetime) -> str:
+    """``YYYY-MM-DD`` as seen in ``AUDIT_TIMEZONE``, for human-readable reasons."""
+    return moment.astimezone(_audit_timezone()).strftime("%Y-%m-%d")
+
+
 async def audit_is_due() -> dict[str, Any]:
-    """Whether a sweep is due: 10 new reports since the last one, or 30 days."""
+    """Whether a sweep is due: 10 new reports since the last one, or the 2nd."""
     async with async_session() as session:
         last = (
             await session.execute(
@@ -2046,17 +2191,27 @@ async def audit_is_due() -> dict[str, Any]:
         return {"due": True, "reason": "no audit has ever run", "corpus_size": corpus_size}
 
     new_reports = corpus_size - int(last["corpus_size"] or 0)
-    age_days = (datetime.now(timezone.utc) - last["started_at"]).days
     if new_reports >= AUDIT_EVERY_N_REPORTS:
         return {"due": True, "reason": f"{new_reports} new reports since last audit",
                 "corpus_size": corpus_size}
-    if age_days >= AUDIT_EVERY_N_DAYS:
-        return {"due": True, "reason": f"last audit was {age_days} days ago",
-                "corpus_size": corpus_size}
+
+    now = datetime.now(timezone.utc)
+    window_start = sweep_window_start(now)
+    # `started_at` is timestamptz, so this comparison is between two aware
+    # instants and the tz used to *find* the boundary does not leak into it.
+    if last["started_at"] < window_start:
+        return {
+            "due": True,
+            "reason": f"no sweep since {_local_day(window_start)} "
+                      f"(day {AUDIT_DAY_OF_MONTH} of the month, {AUDIT_TIMEZONE})",
+            "corpus_size": corpus_size,
+        }
+
     return {
         "due": False,
-        "reason": f"{new_reports}/{AUDIT_EVERY_N_REPORTS} new reports, "
-                  f"{age_days}/{AUDIT_EVERY_N_DAYS} days since last audit",
+        "reason": f"{new_reports}/{AUDIT_EVERY_N_REPORTS} new reports; last sweep "
+                  f"{_local_day(last['started_at'])} is inside the window opened "
+                  f"{_local_day(window_start)} — next {_local_day(_next_window_start(now))}",
         "corpus_size": corpus_size,
     }
 

@@ -12,10 +12,20 @@ mypy==1.18.2
 # Types for third-party packages that ship no inline annotations
 types-python-dateutil==2.9.0.20250822
 
-# Test runner
-pytest==8.4.2
-pytest-asyncio==1.2.0
+# Async runtime, pinned here because httpx/anthropic/starlette all pull it and
+# a floating transitive pin is how a dev image drifts from production.
 anyio==4.11.0
+
+# NO TEST RUNNER. The suite is stdlib `unittest` and runs in the PRODUCTION
+# image with nothing from this file installed — see .github/workflows/ci.yml
+# and the docstring at the top of tests/test_calibration.py. pytest and
+# pytest-asyncio were pinned here for a year and never once invoked; their only
+# effect was a standing Dependabot alert (GHSA-6w46-j5rx-g56g, pytest tmpdir
+# handling) against code that cannot run. Removed rather than bumped: bumping
+# defers the next CVE on a dependency nothing imports.
+#
+# If a test ever genuinely needs pytest, adding it back means changing how the
+# suite runs, and that decision belongs in the CI workflow, not here.
 
 # Dependency vulnerability audit (used by `make audit` and the CI security job)
 pip-audit==2.9.0

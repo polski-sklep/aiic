@@ -406,3 +406,52 @@ rather than a re-derivation.
 in `knowledge/consistency.py`, which is what surfaced the GMX pair in the first
 place. `consistency_findings` was empty in production, so nothing wrong had
 reached the committee. Filed against `agent/consistency-audit`.
+
+---
+
+## D16 — Perps metrics are flagged but not verified, until the paywall is worth paying
+
+**Ambiguity:** the first production consistency sweep produced four findings,
+three of which cannot be verified because the authoritative source charges for
+the endpoint.
+
+**Measured, 30 August 2026:**
+
+```
+api.llama.fi/overview/derivatives             402
+api.llama.fi/summary/derivatives/hyperliquid  402
+curl defillama.com/perps                      403  (bot-blocked)
+browser defillama.com/perps                   renders in full, free
+```
+
+DeFiLlama Pro is **$300/month, subscription only** — no per-call, no credits,
+no pay-as-you-go, confirmed on their own docs. The free API covers spot DEX
+volume; perpetuals sit behind the paid plan.
+
+**Decision:** do not subscribe. `perp_market_share_pct` and derivatives volume
+are a metric class the sweep **flags but never verifies**. The verifier already
+distinguishes "no answer" from "fetch failed" (CONTRACTS §2.7), so these
+findings stay `unverified` and are not retried forever.
+
+**This is temporary, and the trigger to revisit is stated:** if perps
+disagreements recur across several protocols rather than one, the fixed $300
+starts buying something. Today it would resolve three findings about one
+protocol.
+
+**The manual fallback is a browser, not a scraper.** The public site renders
+the data free; `curl` gets 403. Automating around bot protection is not
+something this project will build — it is the same undocumented-endpoint
+pattern the crypto-data-tooling review rejected for Yieldz. A human reading the
+page is a legitimate adjudication path; a scraper is not.
+
+**Read manually on 30 August 2026, which partly settles the open findings:**
+
+```
+Hyperliquid 30d perp volume  $211.36B of $542.19B  ->  39.0%
+Hyperliquid 24h perp volume  $2.387B  of $8.313B   ->  28.7%
+```
+
+Against the disputed `~44%` and `70-80%+`: the ~44% camp is close to reality
+and 70-80%+ is not. This does not formally verify the finding — it is today's
+figure, and it cannot adjudicate whether 44% belonged to January or mid-2026 —
+but it is strong evidence the higher figure was wrong when written.

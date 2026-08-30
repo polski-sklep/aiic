@@ -55,40 +55,42 @@ REPORT_BASE = os.environ.get("COMMITTEE_REPORT_BASE", API_BASE)
 
 
 # ---------------------------------------------------------------------------
-# Run cost
+# Backend modules the bot shares, loaded by path
 # ---------------------------------------------------------------------------
-# The bot reports what an evaluation cost, and the rates and the arithmetic
-# live in backend/app/llm/pricing.py — one definition, shared with whatever
-# puts the number in the persisted record and on the HTML report.
+# Two facts on the completion message are computed by code that also runs in the
+# backend, and both must have exactly one definition:
 #
-# Loaded BY PATH rather than as `app.llm.pricing`, deliberately. Importing the
-# package would execute app/llm/__init__.py -> app/utils/types.py, which needs
+#   backend/app/llm/pricing.py      what the run cost
+#   backend/app/degradation.py      whether enough of the committee survived for
+#                                   the numbers above it to mean anything
+#
+# Both are loaded BY PATH rather than as `app.llm.pricing` / `app.degradation`,
+# deliberately. Importing either as a package member would execute
+# app/__init__.py and app/llm/__init__.py -> app/utils/types.py, which needs
 # TypeAliasType (Python 3.12+). This process is not the backend: it runs under
 # the VPS system interpreter, which is 3.10.12, with only httpx and
 # python-telegram-bot installed. A package import would work in every test and
-# fail on the one machine that sends the messages.
+# fail on the one machine that sends the messages. Both files are therefore
+# stdlib-only and 3.10-clean, and tests/test_degraded_warning.py runs
+# degradation.py under a real 3.10 interpreter to keep it that way.
 #
-# And it is guarded. A missing or broken pricing module must cost the message
-# its cost line and nothing else — never the report it is attached to.
-def _load_pricing():
+# And it is guarded. A missing or broken module must cost the message one line
+# and nothing else — never the report it is attached to.
+def _load_backend_module(name, *parts):
     import importlib.util
     import sys
 
-    name = "committee_bot_pricing"
-    path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "backend", "app", "llm", "pricing.py",
-    )
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts)
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(path)
     module = importlib.util.module_from_spec(spec)
-    # Registered BEFORE exec_module, which is not optional here. pricing.py
-    # uses `from __future__ import annotations`, so @dataclass resolves its
-    # field types lazily via `sys.modules[cls.__module__].__dict__` — with the
-    # module absent from sys.modules that lookup returns None and the import
-    # dies on the first dataclass. Caught only because the guard below turned
-    # it into a missing cost line instead of a crash.
+    # Registered BEFORE exec_module, which is not optional here. Both files use
+    # `from __future__ import annotations`, so @dataclass resolves its field
+    # types lazily via `sys.modules[cls.__module__].__dict__` — with the module
+    # absent from sys.modules that lookup returns None and the import dies on
+    # the first dataclass. Caught only because the guard below turned it into a
+    # missing line instead of a crash.
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
@@ -99,10 +101,20 @@ def _load_pricing():
 
 
 try:
-    pricing = _load_pricing()
+    pricing = _load_backend_module(
+        "committee_bot_pricing", "backend", "app", "llm", "pricing.py"
+    )
 except Exception as _exc:  # pragma: no cover - exercised only by a broken deploy
     pricing = None
     logger.warning("Run-cost pricing unavailable, cost line will be omitted: %s", _exc)
+
+try:
+    degradation = _load_backend_module(
+        "committee_bot_degradation", "backend", "app", "degradation.py"
+    )
+except Exception as _exc:  # pragma: no cover - exercised only by a broken deploy
+    degradation = None
+    logger.warning("Degradation module unavailable, runs will not be flagged: %s", _exc)
 
 
 # ---------------------------------------------------------------------------
@@ -904,18 +916,58 @@ def cost_line(data):
         return ""
 
 
+def degradation_assessment(data):
+    """How much of the committee survived, as an Assessment. Never raises.
+
+    Wrapped whole, for the same reason `cost_line` is: this is a caveat printed
+    beside a result, and no caveat is worth losing the result over. When the
+    module is missing or the record is unreadable the object comes back empty
+    and every consumer below renders exactly what it rendered before this
+    existed.
+    """
+    if degradation is None:
+        return None
+    try:
+        return degradation.assess_evaluation(data)
+    except Exception as exc:  # pragma: no cover - assess_evaluation is itself guarded
+        logger.warning("Could not assess run health: %s", exc)
+        return None
+
+
 def format_completion_message(data, name, ticker, report_url, md_url):
     """Build the completion notification. Pure — no network, no Telegram."""
     chair = data.get("agent_results", {}).get("committee_chair", {}).get("output", {})
     if not isinstance(chair, dict):
         chair = {}
 
+    # WHY THE WARNING IS ABOVE THE DECISION AND NOT BELOW IT.
+    #
+    # Plasma d5571fd9 lost six of its seven data agents and was reported in
+    # this exact format, with nothing to distinguish it from a whole-committee
+    # run. A caveat printed under the score is read after the score, which is
+    # too late — by then the number has been taken. So a degraded run says so
+    # first, and a healthy run adds nothing at all: `block()` is "" and the
+    # message below is byte-for-byte what it was before this existed.
+    health = degradation_assessment(data)
+    banner = health.block() + "\n\n" if health is not None and health.block() else ""
+
     # The cost joins the run-metadata block rather than trailing after the
     # links: it is a fact about this run, and it is read at a glance with the
     # decision, not hunted for at the bottom.
+    #
+    # The coverage caveat is welded to the score itself rather than given a line
+    # of its own, and that placement is the point of the whole exercise. A score
+    # computed over 45% of the weight table is a different kind of number from
+    # one computed over all of it, and the defect being fixed is that the two
+    # were printed identically. A separate line would be separable: the "Score:"
+    # line is what gets read, quoted and pasted, and it must not be able to
+    # travel without saying what it is.
     head = [
         "Decision: %s" % data.get("recommendation", "N/A"),
-        "Score: %s" % format_score(data.get("overall_score")),
+        "Score: %s%s" % (
+            format_score(data.get("overall_score")),
+            health.score_caveat if health is not None else "",
+        ),
         "Conviction: %s" % chair.get("conviction_level", "N/A"),
     ]
     cost = cost_line(data)
@@ -924,11 +976,20 @@ def format_completion_message(data, name, ticker, report_url, md_url):
 
     return (
         "EVALUATION COMPLETE: %s (%s)\n\n"
+        "%s"
         "%s\n\n"
         "%s\n\n"
         "Report: %s\n"
         "Markdown: %s"
-    ) % (name, ticker, "\n".join(head), extract_summary(data)[:500], report_url, md_url)
+    ) % (
+        name,
+        ticker,
+        banner,
+        "\n".join(head),
+        extract_summary(data)[:500],
+        report_url,
+        md_url,
+    )
 
 
 async def run_evaluation(message, project):

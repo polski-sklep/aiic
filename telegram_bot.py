@@ -65,14 +65,20 @@ REPORT_BASE = os.environ.get("COMMITTEE_REPORT_BASE", API_BASE)
 #                                   the numbers above it to mean anything
 #
 # Both are loaded BY PATH rather than as `app.llm.pricing` / `app.degradation`,
-# deliberately. Importing either as a package member would execute
-# app/__init__.py and app/llm/__init__.py -> app/utils/types.py, which needs
-# TypeAliasType (Python 3.12+). This process is not the backend: it runs under
-# the VPS system interpreter, which is 3.10.12, with only httpx and
-# python-telegram-bot installed. A package import would work in every test and
-# fail on the one machine that sends the messages. Both files are therefore
-# stdlib-only and 3.10-clean, and tests/test_degraded_warning.py runs
-# degradation.py under a real 3.10 interpreter to keep it that way.
+# deliberately, and the reason is the interpreter. This process is not the
+# backend: it runs under the VPS system interpreter, which is 3.10.12, from the
+# repo root, with only httpx and python-telegram-bot installed.
+#
+# `import app.llm.pricing` would execute app/llm/__init__.py -> app/utils/
+# types.py, which needs TypeAliasType (3.12+), and would die outright.
+# `import app.degradation` is the subtler case: app/__init__.py is empty today,
+# so it would work — after putting `backend/` on sys.path, which is the actual
+# hazard. That single line makes the whole 3.12-only backend package importable
+# from this 3.10 process, and the next module that grows an `app.utils.types`
+# import breaks the bot at startup rather than in a test. Path-loading keeps the
+# blast radius at one file. Both are therefore stdlib-only and 3.10-clean, and
+# tests/test_degraded_warning.py runs degradation.py under a real 3.10
+# interpreter to keep it that way.
 #
 # And it is guarded. A missing or broken module must cost the message one line
 # and nothing else — never the report it is attached to.

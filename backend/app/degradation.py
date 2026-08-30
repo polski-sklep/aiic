@@ -65,12 +65,14 @@ nothing in the message is a committee judgement. NO REPORT.
 TWO CONSTRAINTS ON THIS FILE, BOTH LOAD-BEARING
 -----------------------------------------------
 1. **Standard library only, and no intra-package imports.** `telegram_bot.py`
-   loads this file directly by path, exactly as it loads `app/llm/pricing.py`,
-   because importing the package would execute `app/llm/__init__.py` ->
-   `app/utils/types.py`, which uses `TypeAliasType` (3.12+). The bot runs under
-   the VPS system interpreter, which is 3.10.12. A `from app.` import here would
-   fail no test and would silently remove the warning from every message on the
-   one machine that sends them — which is the original defect, rebuilt.
+   loads this file directly by path, as it loads `app/llm/pricing.py`. The bot
+   runs from the repo root under the VPS system interpreter, which is 3.10.12,
+   with neither `backend/` on its path nor the backend's dependencies
+   installed; `app/llm/__init__.py` reaches `app/utils/types.py`, which uses
+   `TypeAliasType` (3.12+). A `from app.` import added here would fail no test
+   in the 3.12 container and would silently remove the warning from every
+   message on the one machine that sends them — which is this module's own
+   defect, rebuilt one layer up.
 
 2. **Must parse and run on Python 3.10.** `from __future__ import annotations`
    keeps `X | Y` annotations legal; do not use them in a runtime position, and

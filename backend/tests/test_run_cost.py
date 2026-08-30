@@ -75,11 +75,29 @@ class PriceTableTest(unittest.TestCase):
         self.assertTrue(pricing.PRICES_SOURCE.startswith("https://"))
 
     def test_published_rates(self):
+        self.assertEqual(pricing.USD_PER_MTOK["claude-opus-5"], (5.00, 25.00))
+        self.assertEqual(pricing.USD_PER_MTOK["claude-sonnet-5"], (2.00, 10.00))
         self.assertEqual(pricing.USD_PER_MTOK["claude-opus-4-8"], (5.00, 25.00))
         self.assertEqual(pricing.USD_PER_MTOK["claude-sonnet-4-6"], (3.00, 15.00))
         self.assertEqual(pricing.USD_PER_MTOK["claude-haiku-4-5"], (1.00, 5.00))
         self.assertEqual(pricing.CACHE_WRITE_MULTIPLIER, 1.25)
         self.assertEqual(pricing.CACHE_READ_MULTIPLIER, 0.10)
+
+    def test_superseded_models_stay_priceable(self):
+        # The 20 evaluations persisted before 2026-08-30 recorded
+        # `claude-opus-4-8` and `claude-sonnet-4-6` in `agent_outputs.model_used`.
+        # Pricing is applied at *read* time, so dropping either row when the
+        # committee moved to Opus 5 / Sonnet 5 would retroactively turn every
+        # one of those runs into "cost not available" — the exact wording the
+        # April-2026 Plasma record already carries for its retired ids. This
+        # test is the reason the table is append-only.
+        for retired in ("claude-opus-4-8", "claude-sonnet-4-6"):
+            cost = pricing.price_agent(
+                "historic",
+                {"model_used": retired, "tokens_input": 1000, "tokens_output": 1000},
+            )
+            self.assertTrue(cost.priced, "%s lost its published rate" % retired)
+            self.assertGreater(cost.usd_total, 0.0)
 
     def test_every_configured_model_is_priceable(self):
         # config.py is what the pipeline actually runs on. If a model id there

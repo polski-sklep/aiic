@@ -51,8 +51,23 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # LLM Model Defaults
-    sonnet_model: str = "claude-sonnet-4-6"
-    opus_model: str = "claude-opus-4-8"
+    #
+    # Model ids are fixed strings with NO date suffix. `claude-sonnet-5` and
+    # `claude-opus-5` are complete as written; appending `-20260xxx` produces a
+    # 404 at request time, not a helpful error at startup.
+    #
+    # Moving off 4.8/4.6 is not a string swap. Both successors run adaptive
+    # thinking when the `thinking` parameter is omitted, where 4.8 and 4.6 ran
+    # none — see the block comment in `llm/claude.py`, which sets `thinking`
+    # and `output_config.effort` explicitly so that neither is ever again
+    # decided by a provider default this file cannot see.
+    sonnet_model: str = "claude-sonnet-5"
+    opus_model: str = "claude-opus-5"
+    # Unchanged. Nothing selects ModelTier.FAST today, and this dated snapshot
+    # id is the only remaining reason `pricing.normalise_model` strips a
+    # trailing `-YYYYMMDD`. Current guidance is that ids carry no date suffix,
+    # so this wants tidying — but not inside a migration whose whole job is to
+    # make one behavioural change measurable.
     haiku_model: str = "claude-haiku-4-5-20251001"
     openai_strong_model: str = "gpt-4o"
     openai_fast_model: str = "gpt-4o-mini"

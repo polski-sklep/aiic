@@ -15,6 +15,73 @@ logger = logging.getLogger(__name__)
 # single response, so a long generation cannot hit the SDK's 600s timeout.
 STREAMING_THRESHOLD_TOKENS = 8192
 
+# --- Thinking and effort -------------------------------------------------
+#
+# THIS IS A DELIBERATE CHOICE, NOT A DEFAULT. Read before changing either
+# constant.
+#
+# On Opus 4.8 and Sonnet 4.6, omitting `thinking` meant the model did not
+# think. On Opus 5 and Sonnet 5, omitting it runs ADAPTIVE THINKING. This file
+# omitted it, so the model-id swap in config.py would have turned thinking on
+# for all fifteen agents by accident — a capability change and a cost change
+# arriving disguised as a version bump. Both parameters are therefore set
+# explicitly here, so that neither is ever again decided by a provider default.
+#
+# WHY THINKING IS ON RATHER THAN DISABLED
+#
+# Preserving the old behaviour exactly would mean `{"type": "disabled"}`, and
+# that is the one option this codebase cannot afford. Disabled thinking on
+# Opus 5 has two documented failure modes, and this harness is the worst case
+# for both:
+#
+#   1. The model sometimes writes a tool call into its VISIBLE TEXT instead of
+#      emitting a `tool_use` block. The turn succeeds, the call never runs, and
+#      nothing raises. `BaseAgent.run` treats "no tool calls" as "this is the
+#      final answer" and hands the text straight to `parse_output` — so a
+#      request to fetch data would be recorded as the agent's verdict. The
+#      failure is documented as most common on tool-heavy search workloads,
+#      which is exactly what the eight data agents are.
+#   2. `<thinking>` tags can leak into the visible response — into the same
+#      text that `parse_output` has to read as JSON.
+#
+# Neither is detectable from the persisted record afterwards. Adaptive thinking
+# removes both, and is the documented recommendation over disabling.
+#
+# WHY effort="high" RATHER THAN "xhigh"
+#
+# `high` is the current API default for both models, so pinning it changes
+# nothing today — that is the point. It is written down so the next default
+# change is a diff rather than a surprise, which is the whole lesson of this
+# migration.
+#
+# `xhigh` is the recommended setting for hard *coding and agentic* work, and it
+# is tempting to read this committee as agentic. It is not the shape those
+# recommendations describe: each agent runs a bounded loop of retrieval calls
+# and returns one JSON verdict. The guidance for Opus 5 is explicit that
+# `xhigh`/`max` are for measured wins rather than a starting point, that `low`
+# and `medium` are unusually strong on this model, and that `xhigh` wants
+# `max_tokens` of 64K upwards — against the 4,096–24,576 the agents ask for
+# today. Raising effort blind, on a run costing ~$4, would also confound the
+# one measurement this change exists to produce.
+#
+# The sweep to run next, in order, is DOWN not up: `medium` on the BALANCED
+# tier first (Sonnet 5 at `medium` is documented as comparable to Sonnet 4.6 at
+# `high`, i.e. no worse than what the committee had), then `medium` on STRONG.
+# Both are one-line changes measured against the same baseline.
+THINKING_MODE: JSONObject = {"type": "adaptive"}
+EFFORT = "high"
+
+# `max_tokens` is a hard cap on THINKING PLUS RESPONSE TEXT, and every agent's
+# max_tokens was sized when thinking did not exist: ray_dalio and all eight data
+# agents ask for 4,096, which a thinking model can spend before it starts
+# answering. The symptom would be `stop_reason == "max_tokens"` and a truncated
+# JSON body — recoverable-looking damage that `parse_output` would half-repair.
+#
+# The agent layer asks for the size of the ANSWER it wants and knows nothing
+# about thinking, so the headroom is added here, where thinking is switched on.
+# Unused headroom is free: billing is on tokens produced, not tokens allowed.
+THINKING_HEADROOM_TOKENS = 8192
+
 # --- Prompt caching -------------------------------------------------------
 #
 # An agent loop re-sends its entire conversation on every tool round, so the
@@ -28,9 +95,15 @@ STREAMING_THRESHOLD_TOKENS = 8192
 #     list of text blocks rather than a plain string.
 #   * The render order is tools -> system -> messages, so a breakpoint on a
 #     system block caches the tool definitions with it.
-#   * The minimum cacheable prefix is model-dependent — 1024 tokens for both
-#     models this project uses (claude-sonnet-4-6 and claude-opus-4-8). A
-#     shorter prefix silently does not cache; there is no error.
+#   * The minimum cacheable prefix is model-dependent. It is 512 tokens on
+#     claude-opus-5, down from 1024 on claude-opus-4-8; claude-sonnet-5 is
+#     unchanged at 1024. A shorter prefix silently does not cache; there is no
+#     error. The placement below is unaffected — a lower floor can only cache
+#     more — but a prefix previously written off as too short to cache may
+#     now cache on the STRONG tier.
+#   * Caches are keyed per model, so the first runs after a model change pay
+#     cache writes across the board and read nothing. That is a one-off, not a
+#     regression; compare steady state against steady state.
 #   * Each breakpoint searches back at most 20 content blocks for a prior entry,
 #     which is why the message breakpoints roll forward every round instead of
 #     being pinned to one position.
@@ -163,6 +236,17 @@ class ClaudeProvider:
                 )
                 continue
 
+            # An assistant turn being replayed goes back exactly as it came:
+            # thinking blocks included, in their original order, unmodified.
+            # Rebuilding it from `content` + `tool_calls` below would drop the
+            # thinking blocks, and a thinking model can reject a continuation
+            # whose reasoning has gone missing between rounds.
+            if msg.role == "assistant" and msg.content_blocks:
+                api_messages.append(
+                    {"role": "assistant", "content": list(msg.content_blocks)}
+                )
+                continue
+
             api_msg: JSONObject = {"role": msg.role}
 
             if msg.tool_calls:
@@ -206,14 +290,23 @@ class ClaudeProvider:
         if tools or len(api_messages) > 1:
             self._apply_cache_control(system_blocks, api_messages)
 
+        # Thinking shares the ceiling with the answer — see
+        # THINKING_HEADROOM_TOKENS. `max_tokens` is what the agent wants of the
+        # ANSWER; the request asks for that plus room to think.
+        request_max_tokens = max_tokens + THINKING_HEADROOM_TOKENS
+
         kwargs: JSONObject = {
             "model": model,
-            "max_tokens": max_tokens,
+            "max_tokens": request_max_tokens,
             "messages": api_messages,
+            "thinking": dict(THINKING_MODE),
+            "output_config": {"effort": EFFORT},
         }
         # Claude Opus 4.7+ rejects non-default sampling parameters. Omitting
         # temperature keeps the shared request path compatible across the
-        # current Claude 4.x models.
+        # current Claude models — and CONTRACTS.md §4.4 makes it a defect to
+        # reintroduce. The `temperature` argument in this method's signature is
+        # accepted and deliberately unused for that reason.
         if system_blocks:
             kwargs["system"] = system_blocks
         if tools:
@@ -235,16 +328,40 @@ class ClaudeProvider:
         # get_final_message() returns the same Message object create() would
         # have, so every caller below is unchanged. Small calls keep the simpler
         # non-streaming path.
-        if max_tokens > STREAMING_THRESHOLD_TOKENS:
+        #
+        # The threshold is compared against the size actually requested, which
+        # now includes the thinking headroom. Every agent therefore streams,
+        # where before only the Chair and the Report Writer did. That is the
+        # right direction: adaptive thinking makes a slow turn more likely, not
+        # less, and streaming is what removes the timeout wall.
+        if request_max_tokens > STREAMING_THRESHOLD_TOKENS:
             async with self.client.messages.stream(**kwargs) as stream:
                 response = await stream.get_final_message()
         else:
             response = await self.client.messages.create(**kwargs)
 
+        # A safety classifier can decline a request on Opus 5 / Sonnet 5. That
+        # arrives as a normal HTTP 200 with `stop_reason == "refusal"` and an
+        # EMPTY content list, not as an exception. Nothing below raises on it —
+        # `content_text` stays "" and the agent records unparseable output — so
+        # without this line the only trace would be an agent that mysteriously
+        # returned nothing. Log it where the cause is still visible.
+        if response.stop_reason == "refusal":
+            logger.error(
+                "claude refused model=%s — agent will record empty output. "
+                "stop_details=%r",
+                model,
+                getattr(response, "stop_details", None),
+            )
+
         content_text = ""
         tool_calls: list[ToolCall] = []
 
         for block in response.content:
+            # `thinking` and `redacted_thinking` blocks land here too. They are
+            # deliberately not folded into `content_text`: that string is
+            # parsed as the agent's JSON verdict. They survive on
+            # `content_blocks` below, which is what the replay uses.
             if block.type == "text":
                 content_text += block.text
             elif block.type == "tool_use":
@@ -280,6 +397,20 @@ class ClaudeProvider:
             usage["cache_creation_input_tokens"] = cache_write
             usage["cache_read_input_tokens"] = cache_read
 
+        # The assistant turn verbatim, for `_build_messages` to replay. Taken
+        # from the SDK's own serialisation so it round-trips, with null-valued
+        # keys dropped: the SDK emits every optional field of every block type,
+        # and a `{"type": "text", "text": ..., "citations": null}` is not a
+        # valid block on the way back in.
+        content_blocks: list[JSONObject] = []
+        raw_content = raw.get("content")
+        if isinstance(raw_content, list):
+            for entry in raw_content:
+                if isinstance(entry, dict):
+                    content_blocks.append(
+                        {k: v for k, v in entry.items() if v is not None}
+                    )
+
         return LLMResponse(
             content=content_text,
             tool_calls=tool_calls,
@@ -288,4 +419,5 @@ class ClaudeProvider:
             tokens_output=response.usage.output_tokens,
             stop_reason=response.stop_reason,
             raw=raw,
+            content_blocks=content_blocks,
         )
